@@ -364,17 +364,20 @@
     {
       "id": "hianime",
       "name": "HiAnime",
-      "description": "HiAnime TV episodes via TMDB + Kitsu title mapping with MegaCloud extraction",
+      "description": "HiAnime TV episodes via TMDB + Kitsu title mapping with MegaCloud/MegaPlay extraction",
       "version": "3.0.0",
       "author": "Tapframe / Nuvio Team",
-      "supportedTypes": ["tv"],
+      "supportedTypes": [
+        "tv"
+      ],
       "filename": "providers/hianime.js",
       "enabled": true,
       "limited": true,
       "logo": "https://hianime.to/images/favicon.png",
-      "contentLanguage": ["en", "ja"],
-      "supportsExternalPlayer": true,
-      "notes": "Fetches anime episodes and streaming links from HiAnime using TMDB and Kitsu integration for accurate title matching."
+      "contentLanguage": [
+        "en",
+        "ja"
+      ]
     },
     {
       "id": "vidlink",
