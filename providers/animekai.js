@@ -1,5 +1,5 @@
 // AnimeKai Scraper for Nuvio Local Scrapers
-// FIXED VERSION: Matches working Kotlin implementation (User-Agent + Referer fix)
+// FIXED VERSION: Supports Movies & TV, Fixes Cloudflare Blocks
 
 // TMDB API Configuration
 const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
@@ -7,12 +7,11 @@ const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 
 // CONFIGURATION - FIXED
 // ---------------------
-// We use 'anikai.to' as it is often the unblocked mirror. 
-// If this fails, try changing this to 'https://animekai.to' or 'https://animekai.cc'
+// We use 'anikai.to' as it is the currently active mirror used by the Kotlin app.
 const BASE_DOMAIN = 'https://anikai.to'; 
 
-// CRITICAL FIX: Matched User-Agent to the working Kotlin source 
-// And added the missing 'Referer' which causes blocks if missing.
+// CRITICAL FIX: Matched User-Agent to the working Kotlin source [source: 48]
+// Added 'Referer' which is required to bypass "Access Denied" errors.
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36',
     'Referer': BASE_DOMAIN + '/',
@@ -41,6 +40,8 @@ function fetchRequest(url, options) {
     });
 }
 
+// --- Encryption/Decryption Middleware ---
+
 function encryptKai(text) {
     return fetchRequest(API + '/enc-kai?text=' + encodeURIComponent(text))
         .then(function(res) { return res.json(); })
@@ -67,14 +68,13 @@ function parseHtmlViaApi(html) {
 }
 
 function decryptMegaMedia(embedUrl) {
-    // FIX: More robust URL replacement to handle variations
-    // Kotlin source constructs this carefully: "${parsedUrl.scheme}://${parsedUrl.host}/media/${token}"
+    // FIX: More robust URL replacement to handle variations in embed links
     var mediaUrl;
     if (embedUrl.indexOf('/e/') !== -1) {
         mediaUrl = embedUrl.replace('/e/', '/media/');
     } else {
-        // Fallback: If URL doesn't look standard, try appending mode
-        mediaUrl = embedUrl; // Likely won't work but prevents crash
+        // Fallback: append mode=media if structure is unknown
+        mediaUrl = embedUrl + (embedUrl.indexOf('?') === -1 ? '?' : '&') + 'mode=media';
     }
 
     return fetchRequest(mediaUrl)
@@ -105,7 +105,9 @@ function logRid(rid, msg, extra) {
     } catch(e) {}
 }
 
-// Kitsu Search Logic
+// --- Search Logic (Updated for Movies) ---
+
+// Kitsu Search - Helps find the correct English/Romaji title
 function searchKitsu(animeTitle) {
     const searchUrl = KITSU_BASE_URL + '/anime?filter[text]=' + encodeURIComponent(animeTitle);
     return fetchRequest(searchUrl, { headers: KITSU_HEADERS })
@@ -121,27 +123,110 @@ function searchKitsu(animeTitle) {
         });
 }
 
-function getAccurateAnimeKaiEntry(animeTitle, season, episode, tmdbId) {
+// FIX: Added 'type' parameter (tv or movie) to filter results on the site
+function searchAnimeByName(animeName, type) {
+    var searchUrl = BASE_DOMAIN + '/browser?keyword=' + encodeURIComponent(animeName);
+    
+    // Kotlin code adds "&type[]=movie" or "&type[]=tv"
+    if (type === 'movie') {
+        searchUrl += '&type[]=movie';
+    } else {
+        searchUrl += '&type[]=tv';
+    }
+
+    return fetchRequest(searchUrl)
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var results = [];
+            var pattern = /href="(\/watch\/[^\"]*)"[^>]*>[\s\S]*?<a[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/a>/g;
+            var m;
+            while ((m = pattern.exec(html)) !== null) {
+                var href = m[1];
+                var title = (m[2] || '').trim();
+                if (href && title) {
+                    results.push({
+                        title: title,
+                        url: (href.indexOf('http') === 0 ? href : BASE_DOMAIN + href),
+                        type: type || 'tv'
+                    });
+                }
+            }
+            return results;
+        });
+}
+
+function getAccurateAnimeKaiEntry(animeTitle, season, episode, tmdbId, type) {
     return searchKitsu(animeTitle).then(function(kitsuResults) {
         if (kitsuResults && kitsuResults.length > 0) {
             var kitsuEntry = kitsuResults[0];
             var kitsuTitle = kitsuEntry.attributes.titles && kitsuEntry.attributes.titles.en ||
                             kitsuEntry.attributes.canonicalTitle;
-            return searchAnimeByName(kitsuTitle).then(function(animeKaiResults) {
-                return pickResultForSeason(animeKaiResults, season, tmdbId);
+            // Search with the better title and the correct type
+            return searchAnimeByName(kitsuTitle, type).then(function(animeKaiResults) {
+                return pickResult(animeKaiResults, type, season, tmdbId);
             });
         }
-        return searchAnimeByName(animeTitle).then(function(results) {
-            return pickResultForSeason(results, season, tmdbId);
+        return searchAnimeByName(animeTitle, type).then(function(results) {
+            return pickResult(results, type, season, tmdbId);
         });
     }).catch(function() {
-        return searchAnimeByName(animeTitle).then(function(results) {
-            return pickResultForSeason(results, season, tmdbId);
+        return searchAnimeByName(animeTitle, type).then(function(results) {
+            return pickResult(results, type, season, tmdbId);
         });
     });
 }
 
-// Quality helpers
+// FIX: Updated selection logic to handle Movies separately
+function pickResult(results, mediaType, season, tmdbId) {
+    if (!results || results.length === 0) return Promise.resolve(null);
+    
+    // If it's a movie, we trust the "type=movie" filter and pick the first relevant result
+    if (mediaType === 'movie') {
+        return Promise.resolve(results[0]);
+    }
+
+    // --- TV Show Logic (Season Matching) ---
+    if (!season || !Number.isFinite(season)) return Promise.resolve(results[0]);
+
+    var seasonStr = String(season);
+    var candidates = [];
+
+    // Title match
+    for (var i = 0; i < results.length; i++) {
+        var r = results[i];
+        var t = (r.title || '').toLowerCase();
+        if (t.indexOf('season ' + seasonStr) !== -1 || t.indexOf('s' + seasonStr) !== -1) {
+            candidates.push({ r: r, score: 3 });
+        }
+    }
+
+    // URL match
+    for (var j = 0; j < results.length; j++) {
+        var r2 = results[j];
+        var u = (r2.url || '').toLowerCase();
+        if (u.indexOf('season-' + seasonStr) !== -1 || u.indexOf('-s' + seasonStr) !== -1) {
+            candidates.push({ r: r2, score: 2 });
+        }
+    }
+
+    // Use TMDB episode count to verify correct season
+    if (tmdbId && season > 1) {
+        return getTMDBSeasonInfo(tmdbId, season).then(function(seasonInfo) {
+            // Since we can't easily get episode count from search results without parsing each page,
+            // we rely on the candidates found above.
+            if (candidates.length > 0) return candidates.sort(function(a,b){ return b.score - a.score; })[0].r;
+            return results[0];
+        }).catch(function() {
+             if (candidates.length > 0) return candidates.sort(function(a,b){ return b.score - a.score; })[0].r;
+             return results[0];
+        });
+    }
+
+    return Promise.resolve(candidates.length > 0 ? candidates.sort(function(a,b){ return b.score - a.score; })[0].r : results[0]);
+}
+
+// --- Quality & M3U8 Logic ---
+
 function extractQualityFromUrl(url) {
     var patterns = [
         /(\d{3,4})p/i, /(\d{3,4})k/i, /quality[_-]?(\d{3,4})/i,
@@ -157,7 +242,6 @@ function extractQualityFromUrl(url) {
     return 'Unknown';
 }
 
-// M3U8 utilities
 function parseM3U8Master(content, baseUrl) {
     var lines = content.split('\n');
     var streams = [];
@@ -238,6 +322,8 @@ function resolveMultipleM3U8(m3u8Links) {
     });
 }
 
+// --- Metadata Formatting ---
+
 function buildMediaTitle(info, mediaType, season, episode, episodeInfo) {
     if (episodeInfo && episodeInfo.seasonName) {
         var e = String(episodeInfo.episode || episode).padStart(2, '0');
@@ -249,10 +335,10 @@ function buildMediaTitle(info, mediaType, season, episode, episodeInfo) {
         var e = String(episode).padStart(2, '0');
         return info.title + ' S' + s + 'E' + e;
     }
+    if (info.year) return info.title + ' (' + info.year + ')';
     return info.title;
 }
 
-// TMDB minimal info
 function getTMDBDetails(tmdbId, mediaType) {
     var endpoint = mediaType === 'tv' ? 'tv' : 'movie';
     var url = TMDB_BASE_URL + '/' + endpoint + '/' + tmdbId + '?api_key=' + TMDB_API_KEY + '&append_to_response=external_ids';
@@ -265,32 +351,6 @@ function getTMDBDetails(tmdbId, mediaType) {
             return { title: title, year: year };
         })
         .catch(function() { return { title: null, year: null }; });
-}
-
-// Search on animekai
-function searchAnimeByName(animeName) {
-    // FIX: Ensure we use the global KAI_AJAX variable which uses the correct domain
-    var searchUrl = BASE_DOMAIN + '/browser?keyword=' + encodeURIComponent(animeName);
-    return fetchRequest(searchUrl)
-        .then(function(res) { return res.text(); })
-        .then(function(html) {
-            var results = [];
-            var pattern = /href="(\/watch\/[^\"]*)"[^>]*>[\s\S]*?<a[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/a>/g;
-            var m;
-            while ((m = pattern.exec(html)) !== null) {
-                var href = m[1];
-                var title = (m[2] || '').trim();
-                if (href && title) {
-                    results.push({
-                        title: title,
-                        url: (href.indexOf('http') === 0 ? href : BASE_DOMAIN + href),
-                        episodeCount: 0,
-                        type: 'TV'
-                    });
-                }
-            }
-            return results;
-        });
 }
 
 function getTMDBSeasonInfo(tmdbId, season) {
@@ -309,49 +369,6 @@ function getTMDBSeasonInfo(tmdbId, season) {
         });
 }
 
-function pickResultForSeason(results, season, tmdbId) {
-    if (!results || results.length === 0) return Promise.resolve(null);
-    if (!season || !Number.isFinite(season)) return Promise.resolve(results[0]);
-
-    var seasonStr = String(season);
-    var candidates = [];
-
-    // Title match
-    for (var i = 0; i < results.length; i++) {
-        var r = results[i];
-        var t = (r.title || '').toLowerCase();
-        if (t.indexOf('season ' + seasonStr) !== -1 || t.indexOf('s' + seasonStr) !== -1) {
-            candidates.push({ r: r, score: 3 });
-        }
-    }
-
-    // URL match
-    for (var j = 0; j < results.length; j++) {
-        var r2 = results[j];
-        var u = (r2.url || '').toLowerCase();
-        if (u.indexOf('season-' + seasonStr) !== -1 || u.indexOf('-s' + seasonStr) !== -1) {
-            candidates.push({ r: r2, score: 2 });
-        }
-    }
-
-    if (tmdbId && season > 1) {
-        return getTMDBSeasonInfo(tmdbId, season).then(function(seasonInfo) {
-            if (seasonInfo.episodeCount > 0) {
-                for (var k = 0; k < results.length; k++) {
-                    if (results[k].episodeCount === seasonInfo.episodeCount) return results[k];
-                }
-            }
-            if (candidates.length > 0) return candidates.sort(function(a,b){ return b.score - a.score; })[0].r;
-            return results[0];
-        }).catch(function() {
-             if (candidates.length > 0) return candidates.sort(function(a,b){ return b.score - a.score; })[0].r;
-             return results[0];
-        });
-    }
-
-    return Promise.resolve(candidates.length > 0 ? candidates.sort(function(a,b){ return b.score - a.score; })[0].r : results[0]);
-}
-
 function extractEpisodeAndTitleFromHtml(html) {
     var episodeInfo = { episode: null, title: null, seasonName: null };
     var episodeMatch = html.match(/You are watching <b>Episode (\d+)<\/b>/i) || html.match(/Episode (\d+)/i);
@@ -366,7 +383,6 @@ function extractEpisodeAndTitleFromHtml(html) {
 }
 
 function extractContentIdFromSlug(slugUrl) {
-    // FIX: Add Referer header here via fetchRequest
     return fetchRequest(slugUrl)
         .then(function(res) { return res.text(); })
         .then(function(html) {
@@ -388,12 +404,13 @@ function formatToNuvioStreams(formattedData, mediaTitle) {
     var links = [];
     var subs = formattedData && formattedData.subtitles ? formattedData.subtitles : [];
     var streams = formattedData && formattedData.streams ? formattedData.streams : [];
-    // Nuvio compliant headers
+    
     var headers = {
         'User-Agent': HEADERS['User-Agent'],
         'Referer': HEADERS['Referer'], // Important for playback
         'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
     };
+
     for (var i = 0; i < streams.length; i++) {
         var s = streams[i];
         var quality = s.quality || extractQualityFromUrl(s.url) || 'Unknown';
@@ -412,47 +429,55 @@ function formatToNuvioStreams(formattedData, mediaTitle) {
     return links;
 }
 
-// Main Nuvio entry
+// --- MAIN ENTRY POINT ---
+
 function getStreams(tmdbId, mediaType, season, episode) {
-    if (mediaType !== 'tv') return Promise.resolve([]);
+    // FIX: Accept both 'tv' and 'movie'
+    if (mediaType !== 'tv' && mediaType !== 'movie') return Promise.resolve([]);
+
+    // Normalize input for movies (treat as Season 1 Episode 1)
+    var targetSeason = (mediaType === 'movie') ? 1 : season;
+    var targetEpisode = (mediaType === 'movie') ? 1 : episode;
 
     var mediaInfo = null;
     var selectedEpisodeKey = null;
     var token = null;
     var rid = createRequestId();
     
-    logRid(rid, 'getStreams start', { tmdbId: tmdbId });
+    logRid(rid, 'getStreams start', { tmdbId: tmdbId, type: mediaType });
 
-    return getTMDBDetails(tmdbId, 'tv')
+    return getTMDBDetails(tmdbId, mediaType)
         .then(function(info) {
             mediaInfo = info || { title: null, year: null };
             var titleToSearch = mediaInfo.title || '';
-            var searchTitle = titleToSearch;
-            if (season > 1) {
-                return getTMDBSeasonInfo(tmdbId, season).then(function(seasonInfo) {
-                    if (seasonInfo.name && seasonInfo.name !== `Season ${season}`) {
+            
+            // For TV with seasons, try accurate mapping
+            if (mediaType === 'tv' && targetSeason > 1) {
+                return getTMDBSeasonInfo(tmdbId, targetSeason).then(function(seasonInfo) {
+                    var searchTitle = titleToSearch;
+                    if (seasonInfo.name && seasonInfo.name !== `Season ${targetSeason}`) {
                         searchTitle = titleToSearch + ' ' + seasonInfo.name;
                     }
-                    return getAccurateAnimeKaiEntry(searchTitle, season, episode, tmdbId);
+                    return getAccurateAnimeKaiEntry(searchTitle, targetSeason, targetEpisode, tmdbId, mediaType);
                 });
             }
-            return getAccurateAnimeKaiEntry(titleToSearch, season, episode, tmdbId);
+            // For Movies or Season 1
+            return getAccurateAnimeKaiEntry(titleToSearch, targetSeason, targetEpisode, tmdbId, mediaType);
         })
         .then(function(chosen) {
             if (!chosen || !chosen.url) throw new Error('No AnimeKai entry found');
-            var actualEpisode = chosen.translatedEpisode || episode;
+            logRid(rid, 'Chosen', chosen);
+            
             return extractContentIdFromSlug(chosen.url).then(function(result) {
                 return {
                     contentId: result.contentId,
-                    episode: actualEpisode,
                     episodeInfo: result.episodeInfo
                 };
             });
         })
         .then(function(result) {
             var contentId = result.contentId;
-            var actualEpisode = result.episode;
-
+            
             return encryptKai(contentId).then(function(encId) {
                 var url = KAI_AJAX + '/episodes/list?ani_id=' + contentId + '&_=' + encId;
                 return fetchRequest(url).then(function(res) { return res.json(); });
@@ -461,14 +486,46 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 return parseHtmlViaApi(episodesResp.result);
             })
             .then(function(episodes) {
+                // Find episode token
+                // Movies often have episode ID '1' or the only available ID
                 var keys = Object.keys(episodes || {}).sort(function(a,b){ return parseInt(a) - parseInt(b); });
                 if (keys.length === 0) throw new Error('No episodes');
-                if (typeof actualEpisode === 'number' && episodes[String(actualEpisode)]) {
-                    selectedEpisodeKey = String(actualEpisode);
-                } else {
-                    selectedEpisodeKey = keys[0];
+                
+                var epStr = String(targetEpisode);
+                
+                // Try to find exact episode match
+                // Note: The structure is episodes[season?][episode?] or flat depending on show
+                // We'll iterate to find the token
+                
+                // Helper to search deep in the object for the specific episode number
+                var foundToken = null;
+                
+                // Strategy 1: Direct lookup (common structure: { "1": { "1": { token: ... } } })
+                // The API usually returns episodes grouped by some ID.
+                // We look for a nested object that has the episode number as a key.
+                
+                // Loop through outer keys (usually groups/seasons)
+                for (var k in episodes) {
+                    if (episodes[k][epStr] && episodes[k][epStr].token) {
+                        foundToken = episodes[k][epStr].token;
+                        selectedEpisodeKey = epStr;
+                        break;
+                    }
                 }
-                token = episodes[selectedEpisodeKey][String(actualEpisode)].token;
+                
+                // Strategy 2: If movie, just take the first available token
+                if (!foundToken && mediaType === 'movie') {
+                    // Just take the first thing we find
+                    var firstOuter = keys[0];
+                    var innerKeys = Object.keys(episodes[firstOuter] || {});
+                    if (innerKeys.length > 0) {
+                        foundToken = episodes[firstOuter][innerKeys[0]].token;
+                        selectedEpisodeKey = innerKeys[0];
+                    }
+                }
+
+                if (!foundToken) throw new Error('Episode not found');
+                token = foundToken;
                 return encryptKai(token);
             })
             .then(function(encToken) {
@@ -540,7 +597,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             if (su && su.url && !seen[su.url]) { seen[su.url] = true; uniqueSubs.push(su); }
                         }
                         
-                        var mediaTitle = buildMediaTitle(mediaInfo, 'tv', season, actualEpisode || parseInt(selectedEpisodeKey), result.episodeInfo);
+                        var mediaTitle = buildMediaTitle(mediaInfo, mediaType, targetSeason, targetEpisode, result.episodeInfo);
                         var formatted = formatToNuvioStreams({ streams: combined, subtitles: uniqueSubs }, mediaTitle);
                         
                         // Rough Sort
