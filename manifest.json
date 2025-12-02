@@ -29,6 +29,7 @@
       "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
+        "movie",
         "tv"
       ],
       "filename": "providers/animekai.js",
@@ -185,8 +186,8 @@
       "supportsExternalPlayer": false
     },
     {
-      "id": "animepahe",
-      "name": "AnimePahe",
+      "id": "vidsrc",
+      "name": "VidSrc",
       "description": "VidSrc M3U8 streaming with multiple server support",
       "version": "1.0.0",
       "author": "Nuvio Team",
@@ -194,8 +195,8 @@
         "movie",
         "tv"
       ],
-      "filename": "providers/animepahe.js",
-      "enabled": true,
+      "filename": "providers/vidsrc.js",
+      "enabled": false,
       "logo": "https://vidsrc.xyz/template/vidsrc-ico.png",
       "contentLanguage": [
         "en"
