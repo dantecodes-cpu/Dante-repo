@@ -1,7 +1,7 @@
 // HDHub4u Scraper for Nuvio
 // Ported from Kotlin source (HDhub4uProvider.kt, Extractors.kt, Utils.kt)
 // Strict Promise-based implementation (No async/await)
-// v2.2.0
+// v2.3.0
 
 const cheerio = require('cheerio-without-node-native');
 
@@ -21,7 +21,7 @@ const HEADERS = {
 // POLYFILLS & UTILS (Ported from Utils.kt)
 // =================================================================================
 
-// React Native safe Atob/Btoa (No Buffer allowed)
+// React Native safe Atob/Btoa (No Buffer)
 const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
 
 function atob(input) {
@@ -74,7 +74,7 @@ function getQualityScore(qualityStr) {
 }
 
 // Kotlin: getRedirectLinks(url)
-// Decoding Chain from Utils.kt: base64Decode(pen(base64Decode(base64Decode(combinedString))))
+// The logic from Utils.kt: base64Decode(pen(base64Decode(base64Decode(combinedString))))
 function getRedirectLinks(url) {
     return fetch(url, { headers: HEADERS })
         .then(function(res) { return res.text(); })
@@ -91,7 +91,7 @@ function getRedirectLinks(url) {
             if (!combinedString) return url;
 
             try {
-                // Strict recreation of Kotlin decoding chain
+                // Strict recreation of Kotlin Utils.kt logic
                 const step1 = atob(combinedString); // 1st Decode
                 const step2 = atob(step1);          // 2nd Decode
                 const step3 = rot13(step2);         // Apply Pen (ROT13)
@@ -108,7 +108,7 @@ function getRedirectLinks(url) {
                 const blogUrl = json.blog_url ? json.blog_url.trim() : "";
 
                 if (blogUrl && dataParam) {
-                     return fetch(blogUrl + "?re=" + dataParam, { headers: HEADERS })
+                     return fetch(`${blogUrl}?re=${dataParam}`, { headers: HEADERS })
                         .then(function(r) { return r.text(); })
                         .then(function(t) {
                             const $ = cheerio.load(t);
@@ -120,7 +120,7 @@ function getRedirectLinks(url) {
                 return url;
 
             } catch (e) {
-                console.log("[HDHub4u] Redirect decode error:", e.message);
+                console.log("[HDHub4u] Redirect decode error (using original):", e.message);
                 return url;
             }
         }).catch(function() { return url; });
@@ -148,8 +148,9 @@ function extractHubCloud(url, referer, quality) {
             }
             return { html: html, url: finalUrl };
         })
-        .then(function(result) {
-            const $ = cheerio.load(result.html);
+        .then(function(resObj) {
+            const html = resObj.html;
+            const $ = cheerio.load(html);
             const size = $('i#size').text().trim();
             const title = $('div.card-header').text().trim();
             const links = [];
@@ -169,14 +170,14 @@ function extractHubCloud(url, referer, quality) {
                     provider: 'hdhub4u'
                 };
 
-                // 1. Direct Download / FSL / S3
+                // 1. Direct Download / FSL / S3 / Mega
                 if (btnText.includes("Download File") || btnText.includes("FSL Server") || btnText.includes("S3 Server") || btnText.includes("Mega Server")) {
                     links.push({ ...streamBase, name: server, url: linkUrl });
                     return Promise.resolve();
                 } 
                 // 2. BuzzServer (Requires handling hx-redirect header)
                 else if (btnText.includes("BuzzServer")) {
-                    return fetch(linkUrl + "/download", { method: 'GET', headers: { ...HEADERS, Referer: linkUrl }, redirect: 'manual' })
+                    return fetch(`${linkUrl}/download`, { method: 'GET', headers: { ...HEADERS, Referer: linkUrl }, redirect: 'manual' })
                         .then(function(res) {
                             const hxRedirect = res.headers.get('hx-redirect') || res.headers.get('location');
                             if (hxRedirect) {
@@ -187,15 +188,15 @@ function extractHubCloud(url, referer, quality) {
                 // 3. PixelDrain
                 else if (linkUrl.includes("pixeldra")) {
                     const fileId = linkUrl.split('/').pop();
-                    const dlUrl = "https://pixeldrain.com/api/file/" + fileId + "?download";
+                    const dlUrl = `https://pixeldrain.com/api/file/${fileId}?download`;
                     links.push({ ...streamBase, name: "HDHub4u PixelDrain", url: dlUrl });
                     return Promise.resolve();
                 }
                 // 4. 10Gbps (Redirect Loop)
                 else if (btnText.includes("10Gbps")) {
-                    // Recursive promise to follow redirects manually
+                    // Recursive promise to follow redirects manually until "link=" is found
                     const follow = function(u, count) {
-                        if (count > 3) return Promise.resolve(null);
+                        if (count > 4) return Promise.resolve(null);
                         return fetch(u, { method: 'GET', redirect: 'manual' })
                             .then(function(res) {
                                 const loc = res.headers.get('location');
@@ -253,7 +254,7 @@ function resolveExtractor(url, referer, quality) {
         const fileId = url.split('/').pop();
         return Promise.resolve([{
             name: "HDHub4u PixelDrain",
-            url: "https://pixeldrain.com/api/file/" + fileId + "?download",
+            url: `https://pixeldrain.com/api/file/${fileId}?download`,
             quality: quality,
             provider: "hdhub4u"
         }]);
@@ -282,7 +283,7 @@ function updateDomain() {
         .then(function(d) {
             if (d && d.HDHUB4u) {
                 MAIN_URL = d.HDHUB4u;
-                HEADERS.Referer = MAIN_URL + "/";
+                HEADERS.Referer = `${MAIN_URL}/`;
             }
         })
         .catch(function() {});
@@ -290,7 +291,7 @@ function updateDomain() {
 
 function search(query) {
     return updateDomain().then(function() {
-        const searchUrl = MAIN_URL + "/?s=" + encodeURIComponent(query);
+        const searchUrl = `${MAIN_URL}/?s=${encodeURIComponent(query)}`;
         return fetch(searchUrl, { headers: HEADERS });
     })
     .then(function(res) { return res.text(); })
@@ -300,7 +301,7 @@ function search(query) {
         $('.recent-movies > li.thumb').each(function(i, el) {
             const title = $(el).find('figcaption p').first().text().trim();
             const link = $(el).find('figure a').attr('href');
-            results.push({ title: title, link: link });
+            results.push({ title, link });
         });
         return results;
     });
@@ -308,14 +309,14 @@ function search(query) {
 
 function getStreams(tmdbId, mediaType, season, episode) {
     const typePath = mediaType === 'tv' ? 'tv' : 'movie';
-    const tmdbUrl = "https://api.themoviedb.org/3/" + typePath + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+    const tmdbUrl = `https://api.themoviedb.org/3/${typePath}/${tmdbId}?api_key=${TMDB_API_KEY}`;
     
     return fetch(tmdbUrl).then(function(r) { return r.json(); }).then(function(meta) {
         const title = mediaType === 'tv' ? meta.name : meta.title;
         
         // Search Strategy
         let query = title;
-        if (mediaType === 'tv') query += " Season " + season;
+        if (mediaType === 'tv') query += ` Season ${season}`;
 
         return search(query).then(function(results) {
             if (!results.length) return [];
@@ -343,20 +344,19 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     } else {
                         // TV Logic: Ported from HDhub4uProvider.kt
                         
-                        // 1. Identify Headers
+                        // 1. Scan headers (h3, h4)
                         $('h3, h4').each(function(i, el) {
                             const headerText = $(el).text();
                             
-                            // Check for Direct Link Blocks (e.g. "1080p 10Bit ...")
-                            // These link to a separate page with the episode list
+                            // Check for "Direct Link Blocks" (Quality names in links)
                             const hasQualityLinks = $(el).find('a').toArray().some(function(a) { return $(a).text().match(/1080|720|4K/i); });
 
-                            // Check for Episode Header (e.g. "Episode 1")
+                            // Check for "Episode Headers" (e.g. "Episode 1")
                             const epMatch = headerText.match(/(?:Episode|E)\s*(\d+)/i);
                             const epNumFromHeader = epMatch ? parseInt(epMatch[1]) : null;
 
                             if (hasQualityLinks) {
-                                // Add these redirects to be processed
+                                // Logic: Grab these links, follow them, find h5 tags with episode info
                                 const links = $(el).find('a').map(function(j, a) { return $(a).attr('href'); }).get();
                                 links.forEach(function(l) {
                                     linksToProcess.push({ 
@@ -367,11 +367,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                 });
                             } 
                             else if (epNumFromHeader === episode) {
-                                // We found "Episode X" header directly
+                                // Logic: We found the header for the specific episode requested
                                 const links = $(el).find('a').map(function(j, a) { return $(a).attr('href'); }).get();
                                 links.forEach(function(l) { linksToProcess.push({ url: l, quality: "Unknown" }); });
 
-                                // Check siblings for links until next header
+                                // Also grab sibling links until next hr/h3/h4
                                 let next = $(el).next();
                                 while(next.length && !next.is('hr') && !next.is('h3') && !next.is('h4')) {
                                     next.find('a').each(function(k, a) {
@@ -383,7 +383,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         });
                     }
 
-                    // Process Links (Resolve redirects and extract)
+                    // Process gathered links using Promise.all (no async loop)
                     const streamPromises = linksToProcess.map(function(linkObj) {
                         const url = linkObj.url;
                         const quality = linkObj.quality;
@@ -391,12 +391,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         const targetEpisode = linkObj.targetEpisode;
 
                         if (isRedirectBlock) {
-                            // Follow redirect -> Find Episode in new page
+                            // Path A: Follow redirect -> Find Episode in new page -> Resolve
                             return getRedirectLinks(url).then(function(resolved) {
                                 return fetch(resolved, { headers: HEADERS }).then(function(r) { return r.text(); }).then(function(subHtml) {
                                     const $$ = cheerio.load(subHtml);
                                     const subLinks = [];
                                     
+                                    // Look for "Episode X" inside h5 tags on the secondary page
                                     $$('h5 a').each(function(i, el) {
                                         const t = $$(el).text();
                                         const match = t.match(/(?:Episode|E)\s*(\d+)/i);
@@ -408,6 +409,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                         }
                                     });
 
+                                    // Resolve the inner links found
                                     const subPromises = subLinks.map(function(sl) {
                                         return getRedirectLinks(sl.url).then(function(finalUrl) {
                                              return resolveExtractor(finalUrl, resolved, sl.quality);
@@ -417,7 +419,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                 }).catch(function() { return []; });
                             });
                         } else {
-                            // Standard Link
+                            // Path B: Standard Link -> Resolve
                             return getRedirectLinks(url).then(function(finalUrl) {
                                 return resolveExtractor(finalUrl, pageUrl, quality);
                             });
@@ -427,7 +429,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return Promise.all(streamPromises).then(function(results) {
                         const allStreams = results.flat().filter(function(s) { return s && s.url; });
                         
-                        // Deduplicate based on URL
+                        // Deduplicate
                         const uniqueStreams = [];
                         const seen = new Set();
                         allStreams.forEach(function(s) {
@@ -437,7 +439,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             }
                         });
 
-                        // Sort by Quality
+                        // Sort by Quality (High to Low)
                         return uniqueStreams.sort(function(a, b) { return getQualityScore(b.quality) - getQualityScore(a.quality); });
                     });
                 });
