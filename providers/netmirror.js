@@ -560,10 +560,6 @@ const streamHeaders = {
     ? "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/120"
     : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
 };
-
-if (isPrime) {
-  streamHeaders["Range"] = "bytes=0-";
-}
                 return {
                   name: `NetMirror (${platform.charAt(0).toUpperCase() + platform.slice(1)})`,
                   title: streamTitle,
