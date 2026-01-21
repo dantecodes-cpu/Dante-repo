@@ -280,7 +280,7 @@ function getStreamingLinks(contentId, title, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const playlistEndpoints = {
-  netflix: `${NETMIRROR_BASE}/tv/playlist.php`,
+  netflix: `${NETMIRROR_BASE}/playlist.php`,
   primevideo: `${NETMIRROR_BASE}/pv/playlist.php`,
   disney: `${NETMIRROR_BASE}/mobile/hs/playlist.php`
 };
@@ -543,12 +543,15 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
 
 const isPrime = platform === "primevideo";
 const isDisney = platform === "disney";
+const isNetflix = platform === "netflix";
 
 const streamHeaders = {
   "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
   "Origin": "https://net51.cc",
   "Referer": isDisney
     ? "https://net51.cc/mobile/hs/home"
+    : isNetflix
+    ? "https://net51.cc/home"
     : "https://net51.cc/tv/home",
   "Cookie": "hd=on",
   "User-Agent": isDisney
