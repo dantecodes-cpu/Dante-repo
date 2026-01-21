@@ -103,8 +103,8 @@ function searchContent(query, platform) {
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const searchEndpoints = {
       "netflix": `${NETMIRROR_BASE}/search.php`,
-      "primevideo": `${NETMIRROR_BASE}/pv/search.php`,
-      "disney": `${NETMIRROR_BASE}/mobile/hs/search.php`
+      "primevideo": `${NETMIRROR_BASE}/search.php`,
+      "disney": `${NETMIRROR_BASE}/search.php`
     };
     const searchUrl = searchEndpoints[platform.toLowerCase()] || searchEndpoints["netflix"];
     return makeRequest(
