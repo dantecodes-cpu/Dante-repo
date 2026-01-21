@@ -3,6 +3,26 @@
   "version": "1.0.0",
   "scrapers": [
     {
+      "id": "Toonstream",
+      "name": "4KHDHub",
+      "description": "Bommalu chusthavaa",
+      "version": "1.3.6",
+      "author": "Dante",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/Toonstream.js",
+      "enabled": true,
+      "formats": [
+        "mkv"
+      ],
+      "logo": "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/toonstream.png",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
       "id": "4khdhub",
       "name": "4KHDHub",
       "description": "4KHDHub direct links",
