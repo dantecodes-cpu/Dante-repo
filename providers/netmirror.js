@@ -263,7 +263,13 @@ function loadContent(contentId, platform) {
     };
   });
 }
-function getStreamingLinks(contentId, title, platform) {
+
+function findEpisodeId(episodes, season, episode) {
+  if (!episodes || episodes.length === 0) {
+    console.log("[NetMirror] No episodes found in content data");
+    return null;
+  }
+  const validEpisodes = epfunction getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title}`);
   const ottMap = {
     "netflix": "nf",
@@ -281,9 +287,9 @@ function getStreamingLinks(contentId, title, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // FIX: Netflix must use /tv/playlist.php to generate valid tokens
+    // Ensure Netflix uses the /tv/ endpoint to generate valid tokens
     const playlistEndpoints = {
-      netflix: `${NETMIRROR_BASE}/tv/playlist.php`, 
+      netflix: `${NETMIRROR_BASE}/tv/playlist.php`,
       primevideo: `${NETMIRROR_BASE}/pv/playlist.php`,
       disney: `${NETMIRROR_BASE}/mobile/hs/playlist.php`
     };
@@ -313,7 +319,7 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let file = source.file;
           
-          // FIX: Manually strip /tv/ from the path for movies
+          // 1. Netflix Fix: Strip /tv/ from the path if present
           if (file.includes("/tv/")) {
             file = file.replace("/tv/", "/");
           }
@@ -322,17 +328,47 @@ function getStreamingLinks(contentId, title, platform) {
           if (file.startsWith("//")) {
             fullUrl = "https:" + file;
           } else if (file.startsWith("/")) {
-            fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + file;
+            // 2. Prime Video Fix: Ensure path has /pv/ if missing
+            if (platform.toLowerCase() === "primevideo" && !file.startsWith("/pv/")) {
+              fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/pv" + file;
+            } else {
+              fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + file;
+            }
           } else if (file.startsWith("http")) {
             fullUrl = file;
           } else {
-            fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + file;
+            // Relative path handling
+             if (platform.toLowerCase() === "primevideo" && !file.startsWith("pv/")) {
+               fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/pv/" + file;
+             } else {
+               fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + file;
+             }
           }
+
+          const isDisney = platform.toLowerCase() === "disney";
+          const isNetflix = platform.toLowerCase() === "netflix";
+
+          const streamHeaders = {
+            "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
+            "Origin": "https://net51.cc",
+            "Referer": isDisney
+              ? "https://net51.cc/mobile/hs/home"
+              : isNetflix
+              ? "https://net51.cc/home"
+              : "https://net51.cc/tv/home",
+            "Cookie": "hd=on",
+            "User-Agent": isDisney
+              ? "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/120"
+              : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          };
+
+          // REMOVED: The Range header block that was causing Error 22004
 
           sources.push({
             url: fullUrl,
             quality: source.label,
-            type: source.type || "application/x-mpegURL"
+            type: source.type || "application/x-mpegURL",
+            headers: streamHeaders
           });
         });
       }
@@ -354,12 +390,7 @@ function getStreamingLinks(contentId, title, platform) {
     return { sources, subtitles };
   });
 }
-function findEpisodeId(episodes, season, episode) {
-  if (!episodes || episodes.length === 0) {
-    console.log("[NetMirror] No episodes found in content data");
-    return null;
-  }
-  const validEpisodes = episodes.filter((ep) => ep !== null);
+isodes.filter((ep) => ep !== null);
   console.log(`[NetMirror] Found ${validEpisodes.length} valid episodes`);
   if (validEpisodes.length > 0) {
     console.log(`[NetMirror] Sample episode structure:`, JSON.stringify(validEpisodes[0], null, 2));
