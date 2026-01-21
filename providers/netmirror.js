@@ -280,7 +280,7 @@ function getStreamingLinks(contentId, title, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const playlistEndpoints = {
-  netflix: `${NETMIRROR_BASE}/tv/playlist.php`,
+  netflix: `${NETMIRROR_BASE}/playlist.php`,
   primevideo: `${NETMIRROR_BASE}/pv/playlist.php`,
   disney: `${NETMIRROR_BASE}/mobile/hs/playlist.php`
 };
