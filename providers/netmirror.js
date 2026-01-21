@@ -310,29 +310,31 @@ const playlistUrl =
     const sources = [];
     const subtitles = [];
     playlist.forEach((item) => {
-      if (item.sources) {
-        item.sources.forEach((source) => {
-          let fullUrl = source.file.replace("/tv/", "/");
-
-// protocol-relative
-if (fullUrl.startsWith("//")) {
-  fullUrl = "https:" + fullUrl;
-
-// absolute path (KEEP AS-IS)
-} else if (fullUrl.startsWith("/")) {
-  fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + fullUrl;
-
-// relative path
-} else if (!fullUrl.startsWith("http")) {
-  fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + fullUrl;
-}
-          sources.push({
-            url: fullUrl,
-            quality: source.label,
-            type: source.type || "application/x-mpegURL"
-          });
-        });
+  if (item.sources) {
+    item.sources.forEach((source) => {
+      // 1. Clean the /tv/ path first
+      let file = source.file.replace("/tv/", "/");
+      
+      let fullUrl;
+      // 2. Build the full URL without destroying existing query parameters
+      if (file.startsWith("//")) {
+        fullUrl = "https:" + file;
+      } else if (file.startsWith("/")) {
+        fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + file;
+      } else if (file.startsWith("http")) {
+        fullUrl = file;
+      } else {
+        fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + file;
       }
+
+      sources.push({
+        url: fullUrl,
+        quality: source.label,
+        type: source.type || "application/x-mpegURL"
+      });
+    });
+  }
+
       if (item.tracks) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
           let fullSubUrl = track.file;
