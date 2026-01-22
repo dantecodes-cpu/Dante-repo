@@ -566,15 +566,13 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 
                 // Updated headers - minimal for PrimeVideo
                 const streamHeaders = {
-                  "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
-                  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-                  "Origin": "https://net51.cc"
-                };
-                
-                // Only add Referer for Netflix/Disney, NOT for PrimeVideo
-                if (platform.toLowerCase() !== "primevideo") {
-                  streamHeaders["Referer"] = isNfOrPv ? "https://net51.cc/" : "https://net51.cc/tv/home";
-                }
+  "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
+  "Accept": "*/*"
+};
+
+if (platform.toLowerCase() !== "primevideo") {
+  streamHeaders["Referer"] = "https://net51.cc/";
+}
                 
                 return {
                   name: `NetMirror (${platform.charAt(0).toUpperCase() + platform.slice(1)})`,
