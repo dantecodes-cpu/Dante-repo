@@ -282,9 +282,6 @@ function getStreamingLinks(contentId, title, platform) {
   return bypass().then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
-      "user_token": platform.toLowerCase() === "primevideo" 
-        ? "63fb201abb521d0dfdce03bc5dcda456"
-        : "233123f803cf02184bf6c67e149cdd50",
       "ott": ott,
       "hd": "on"
     };
