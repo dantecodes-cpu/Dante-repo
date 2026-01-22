@@ -272,7 +272,6 @@ function getStreamingLinks(contentId, title, platform) {
     "disney": "hs"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
-  
   return bypass().then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
@@ -282,7 +281,7 @@ function getStreamingLinks(contentId, title, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // Use same endpoints as version 8
+    // Use different endpoints for different platforms (from version 8)
     const playlistEndpoints = {
       netflix: `${NETMIRROR_BASE}/playlist.php`,
       primevideo: `${NETMIRROR_BASE}/pv/playlist.php`,
@@ -317,48 +316,36 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let file = source.file;
           
-          // Clean the path (keep from version 14)
-          if (file.includes("/tv/")) {
-            file = file.replace("/tv/", "/");
-          }
-
+          // Fix URL construction - handle different cases properly
           let fullUrl;
+          
           if (file.startsWith("//")) {
             fullUrl = "https:" + file;
-          } else if (file.startsWith("/")) {
-            // Use version 8's simpler URL construction
-            fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + file;
           } else if (file.startsWith("http")) {
             fullUrl = file;
+          } else if (file.startsWith("/")) {
+            // Absolute path - just append to base
+            fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + file;
           } else {
-            fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + file;
+            // Relative path
+            if (platform.toLowerCase() === "primevideo" && !file.includes("/pv/")) {
+              // For Prime Video, ensure path starts with /pv/
+              fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/pv/" + file;
+            } else if (platform.toLowerCase() === "disney" && !file.includes("/hs/")) {
+              // For Disney, ensure path starts with /mobile/hs/
+              fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/mobile/hs/" + file;
+            } else {
+              fullUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + file;
+            }
           }
-
-          // Use version 8's header structure
-          const isPrime = platform.toLowerCase() === "primevideo";
-          const isDisney = platform.toLowerCase() === "disney";
           
-          const streamHeaders = {
-            "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
-            "Origin": "https://net51.cc",
-            "Referer": isDisney
-              ? "https://net51.cc/mobile/hs/home"
-              : "https://net51.cc/tv/home",
-            "Cookie": "hd=on",
-            "User-Agent": isDisney
-              ? "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/120"
-              : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-          };
-
-          if (isPrime) {
-            streamHeaders["Range"] = "bytes=0-";
-          }
+          // Clean up double slashes
+          fullUrl = fullUrl.replace(/([^:])\/\//g, "$1/");
 
           sources.push({
             url: fullUrl,
             quality: source.label,
-            type: source.type || "application/x-mpegURL",
-            headers: streamHeaders
+            type: source.type || "application/x-mpegURL"
           });
         });
       }
@@ -367,9 +354,11 @@ function getStreamingLinks(contentId, title, platform) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
           let fullSubUrl = track.file;
           if (track.file.startsWith("/") && !track.file.startsWith("//")) {
-            fullSubUrl = NETMIRROR_BASE + track.file;
+            fullSubUrl = NETMIRROR_BASE.replace(/\/$/, "") + track.file;
           } else if (track.file.startsWith("//")) {
             fullSubUrl = "https:" + track.file;
+          } else if (!track.file.startsWith("http")) {
+            fullSubUrl = NETMIRROR_BASE.replace(/\/$/, "") + "/" + track.file;
           }
           subtitles.push({
             url: fullSubUrl,
@@ -473,7 +462,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
         return simB - simA;
       });
     }
-    function tryPlatform(platformIndex) {
+        function tryPlatform(platformIndex) {
       if (platformIndex >= platforms.length) {
         console.log("[NetMirror] No content found on any platform");
         return [];
@@ -516,4 +505,141 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   epSeason = parseInt(ep.season);
                   epNumber = parseInt(ep.episode);
                 } else if (ep.season_number && ep.episode_number) {
-        
+                  epSeason = parseInt(ep.season_number);
+                  epNumber = parseInt(ep.episode_number);
+                }
+                return epSeason === (seasonNum || 1) && epNumber === (episodeNum || 1);
+              });
+              if (episodeData) {
+                targetContentId = episodeData.id;
+                console.log(`[NetMirror] Found episode ID: ${episodeData.id}`);
+              } else {
+                console.log(`[NetMirror] Episode S${seasonNum}E${episodeNum} not found`);
+                return null;
+              }
+            }
+            return getStreamingLinks(targetContentId, title, platform).then(function(streamData) {
+              if (!streamData.sources || streamData.sources.length === 0) {
+                console.log(`[NetMirror] No streaming links found`);
+                return null;
+              }
+              const streams = streamData.sources.map((source) => {
+                let quality = "HD";
+                const urlQualityMatch = source.url.match(/[?&]q=(\d+p)/i);
+                if (urlQualityMatch) {
+                  quality = urlQualityMatch[1];
+                } else if (source.quality) {
+                  const labelQualityMatch = source.quality.match(/(\d+p)/i);
+                  if (labelQualityMatch) {
+                    quality = labelQualityMatch[1];
+                  } else {
+                    const normalizedQuality = source.quality.toLowerCase();
+                    if (normalizedQuality.includes("full hd") || normalizedQuality.includes("1080")) {
+                      quality = "1080p";
+                    } else if (normalizedQuality.includes("hd") || normalizedQuality.includes("720")) {
+                      quality = "720p";
+                    } else if (normalizedQuality.includes("480")) {
+                      quality = "480p";
+                    } else {
+                      quality = source.quality;
+                    }
+                  }
+                } else if (source.url.includes("720p")) {
+                  quality = "720p";
+                } else if (source.url.includes("480p")) {
+                  quality = "480p";
+                } else if (source.url.includes("1080p")) {
+                  quality = "1080p";
+                }
+                let streamTitle = `${title} ${year ? `(${year})` : ""} ${quality}`;
+                if (mediaType === "tv") {
+                  const episodeName = episodeData && episodeData.t ? episodeData.t : "";
+                  streamTitle += ` S${seasonNum}E${episodeNum}`;
+                  if (episodeName) {
+                    streamTitle += ` - ${episodeName}`;
+                  }
+                }
+                
+                // Platform-specific headers (from version 8)
+                const isPrime = platform.toLowerCase() === "primevideo";
+                const isDisney = platform.toLowerCase() === "disney";
+                const isNetflix = platform.toLowerCase() === "netflix";
+
+                const streamHeaders = {
+                  "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
+                  "Origin": "https://net51.cc",
+                  "Referer": isDisney
+                    ? "https://net51.cc/mobile/hs/home"
+                    : isNetflix
+                    ? "https://net51.cc/home"
+                    : "https://net51.cc/tv/home",
+                  "Cookie": "hd=on",
+                  "User-Agent": isDisney
+                    ? "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/120"
+                    : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                };
+
+                if (isPrime) {
+                  streamHeaders["Range"] = "bytes=0-";
+                }
+                
+                return {
+                  name: `NetMirror (${platform.charAt(0).toUpperCase() + platform.slice(1)})`,
+                  title: streamTitle,
+                  url: source.url,
+                  quality,
+                  type: (source.type || "").includes("mpegURL") ? "hls" : "direct",
+                  headers: streamHeaders
+                };
+              });
+              
+              // Sort streams by quality (highest first)
+              streams.sort((a, b) => {
+                if (a.quality.toLowerCase() === "auto" && b.quality.toLowerCase() !== "auto") {
+                  return -1;
+                }
+                if (b.quality.toLowerCase() === "auto" && a.quality.toLowerCase() !== "auto") {
+                  return 1;
+                }
+                const parseQuality = (quality) => {
+                  const match = quality.match(/(\d{3,4})p/i);
+                  return match ? parseInt(match[1], 10) : 0;
+                };
+                const qualityA = parseQuality(a.quality);
+                const qualityB = parseQuality(b.quality);
+                return qualityB - qualityA;
+              });
+              
+              console.log(`[NetMirror] Successfully processed ${streams.length} streams from ${platform}`);
+              return streams;
+            });
+          });
+        });
+      }
+      
+      return trySearch(false).then(function(result) {
+        if (result) {
+          return result;
+        } else {
+          console.log(`[NetMirror] No content found on ${platform}, trying next platform`);
+          return tryPlatform(platformIndex + 1);
+        }
+      }).catch(function(error) {
+        console.log(`[NetMirror] Error on ${platform}: ${error.message}, trying next platform`);
+        return tryPlatform(platformIndex + 1);
+      });
+    }
+    
+    return tryPlatform(0);
+    
+  }).catch(function(error) {
+    console.error(`[NetMirror] Error in getStreams: ${error.message}`);
+    return [];
+  });
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { getStreams };
+} else {
+  global.getStreams = getStreams;
+}
