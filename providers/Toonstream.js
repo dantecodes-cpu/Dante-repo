@@ -1,121 +1,534 @@
+// toonstream.nuvio.js
 const TOONSTREAM_BASE = "https://toonstream.one";
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const BASE_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.5",
+  "Connection": "keep-alive",
+  "Upgrade-Insecure-Requests": "1"
+};
 
-/**
- * Main entry point - Matches NetMirror's structure
- * Uses TMDB to get the correct title before searching Toonstream
- */
-async function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null) {
-    try {
-        // 1. Get metadata from TMDB (Same as NetMirror)
-        const tmdbUrl = `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-        const tmdbRes = await fetch(tmdbUrl);
-        const tmdbData = await tmdbRes.json();
-        
-        const title = mediaType === "tv" ? tmdbData.name : tmdbData.title;
-        if (!title) return [];
+let cache = {
+  catalog: {},
+  meta: {},
+  streams: {}
+};
 
-        console.log(`[Toonstream] Searching for: ${title}`);
-
-        [span_0](start_span)// 2. Search Toonstream website[span_0](end_span)
-        const searchResults = [];
-        [span_1](start_span)// Check first 2 pages for better accuracy[span_1](end_span)
-        for (let i = 1; i <= 2; i++) {
-            const searchUrl = `${TOONSTREAM_BASE}/page/${i}/?s=${encodeURIComponent(title)}`;
-            const res = await fetch(searchUrl);
-            const html = await res.text();
-            const doc = new DOMParser().parseFromString(html, "text/html");
-            
-            [span_2](start_span)[span_3](start_span)const items = doc.querySelectorAll("#movies-a > ul > li");[span_2](end_span)[span_3](end_span)
-            items.forEach(item => {
-                [span_4](start_span)const itemTitle = item.querySelector("article h2")?.textContent.replace("Watch Online", "").trim();[span_4](end_span)
-                [span_5](start_span)const href = item.querySelector("article > a")?.getAttribute("href");[span_5](end_span)
-                if (href) searchResults.push({ title: itemTitle, url: href });
-            });
-            if (items.length === 0) break;
-        }
-
-        // 3. Find the best match
-        const match = searchResults.find(r => 
-            r.title.toLowerCase().includes(title.toLowerCase())
-        ) || searchResults[0];
-
-        if (!match) return [];
-
-        [span_6](start_span)// 4. Load the page to find video links or episodes[span_6](end_span)
-        const pageRes = await fetch(match.url);
-        const pageHtml = await pageRes.text();
-        const pageDoc = new DOMParser().parseFromString(pageHtml, "text/html");
-
-        let targetUrl = match.url;
-
-        [span_7](start_span)// 5. Handle TV Series Episode Selection[span_7](end_span)
-        if (mediaType === "tv") {
-            [span_8](start_span)const seasonBtn = pageDoc.querySelector(`div.aa-drp.choose-season > ul > li > a`);[span_8](end_span)
-            if (seasonBtn) {
-                const dataPost = seasonBtn.getAttribute("data-post");
-                const dataSeason = seasonNum || 1;
-
-                [span_9](start_span)const ajaxRes = await fetch(`${TOONSTREAM_BASE}/wp-admin/admin-ajax.php`, {[span_9](end_span)
-                    method: "POST",
-                    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-                    body: `action=action_select_season&season=${dataSeason}&post=${dataPost}`
-                });
-                const seasonHtml = await ajaxRes.text();
-                const seasonDoc = new DOMParser().parseFromString(seasonHtml, "text/html");
-                
-                [span_10](start_span)// Find specific episode[span_10](end_span)
-                const episodes = seasonDoc.querySelectorAll("article");
-                const targetEp = episodes[episodeNum - 1] || episodes[0];
-                targetUrl = targetEp?.querySelector("a")?.getAttribute("href") || targetUrl;
-            }
-        }
-
-        [span_11](start_span)// 6. Extract Final Streaming Links[span_11](end_span)
-        return await extractLinks(targetUrl, title);
-
-    } catch (e) {
-        console.error("[Toonstream] Error:", e);
-        return [];
+// Helper functions
+function makeRequest(url, options = {}) {
+  const headers = { ...BASE_HEADERS, ...options.headers };
+  
+  return fetch(url, {
+    ...options,
+    headers,
+    timeout: 10000
+  }).then(function(response) {
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    return response.text();
+  });
 }
 
-/**
- * [span_12](start_span)Extracts links from iframes found on the page[span_12](end_span)
- */
-async function extractLinks(url, title) {
-    const res = await fetch(url);
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    const streams = [];
+function parseHTML(html) {
+  if (typeof DOMParser !== 'undefined') {
+    const parser = new DOMParser();
+    return parser.parseFromString(html, 'text/html');
+  }
+  // Fallback for Node.js
+  const { JSDOM } = require('jsdom');
+  const dom = new JSDOM(html);
+  return dom.window.document;
+}
 
-    [span_13](start_span)const iframes = doc.querySelectorAll("#aa-options > div > iframe");[span_13](end_span)
-    for (const iframe of iframes) {
-        const serverUrl = iframe.getAttribute("data-src");
-        if (!serverUrl) continue;
+function fixUrl(url) {
+  if (!url) return '';
+  if (url.startsWith('http')) return url;
+  if (url.startsWith('//')) return 'https:' + url;
+  if (url.startsWith('/')) return TOONSTREAM_BASE + url;
+  return TOONSTREAM_BASE + '/' + url;
+}
 
-        [span_14](start_span)// Handle Zephyrflick / AWStream[span_14](end_span)
-        if (serverUrl.includes("zephyrflick") || serverUrl.includes("awstream")) {
-            const hash = serverUrl.split("/").pop();
-            const apiBase = serverUrl.includes("zephyrflick") ? "https://play.zephyrflick.top" : "https://z.awstream.net";
-            
-            [span_15](start_span)const apiRes = await fetch(`${apiBase}/player/index.php?data=${hash}&do=getVideo`, {[span_15](end_span)
-                method: "POST",
-                headers: { "x-requested-with": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded" },
-                body: `hash=${hash}&r=${encodeURIComponent(TOONSTREAM_BASE)}`
-            });
+// Nuvio Provider Implementation
+const provider = {
+  // Required: Provider manifest
+  manifest: {
+    id: 'com.toonstream',
+    version: '1.0.0',
+    name: 'Toonstream',
+    description: 'Watch cartoons, anime and movies from Toonstream',
+    resources: ['catalog', 'meta', 'stream'],
+    types: ['movie', 'series'],
+    idPrefixes: ['toon'],
+    catalogs: [
+      {
+        type: 'movie',
+        id: 'toonstream-movies',
+        name: 'Toonstream Movies',
+        extra: [{ name: 'genre', options: ['All', 'Cartoon', 'Anime'] }]
+      },
+      {
+        type: 'series',
+        id: 'toonstream-series',
+        name: 'Toonstream Series',
+        extra: [{ name: 'genre', options: ['All', 'Cartoon', 'Anime'] }]
+      }
+    ]
+  },
 
-            const json = await apiRes.json();
-            [span_16](start_span)if (json.videoSource) {[span_16](end_span)
-                streams.push({
-                    name: "Toonstream (HLS)",
-                    title: `${title} - 1080p`,
-                    url: json.videoSource,
-                    [span_17](start_span)quality: "1080p",[span_17](end_span)
-                    type: "hls"
-                });
-            }
-        }
+  // Catalog handler - returns list of items
+  getCatalog: async function(args) {
+    const { type, id, extra = {} } = args;
+    const page = extra.skip ? Math.floor(extra.skip / 20) + 1 : 1;
+    const genre = extra.genre || 'All';
+    
+    console.log(`[Toonstream] Fetching catalog: ${id}, page ${page}, genre ${genre}`);
+    
+    try {
+      let endpoint;
+      if (id === 'toonstream-movies') {
+        endpoint = 'movies';
+      } else if (id === 'toonstream-series') {
+        endpoint = 'series';
+      } else if (genre === 'Cartoon') {
+        endpoint = 'category/cartoon';
+      } else if (genre === 'Anime') {
+        endpoint = 'category/anime';
+      } else {
+        endpoint = 'movies';
+      }
+      
+      const url = `${TOONSTREAM_BASE}/${endpoint}/page/${page}/`;
+      const html = await makeRequest(url);
+      const doc = parseHTML(html);
+      
+      const items = Array.from(doc.querySelectorAll("#movies-a > ul > li")).map((item) => {
+        const titleElement = item.querySelector("article > header > h2");
+        const linkElement = item.querySelector("article > a");
+        const imageElement = item.querySelector("article > div.post-thumbnail > figure > img");
+        
+        const title = titleElement ? titleElement.textContent.trim().replace("Watch Online", "") : "Unknown";
+        const href = linkElement ? linkElement.getAttribute("href") : "";
+        const posterUrl = imageElement ? imageElement.getAttribute("src") : "";
+        
+        const itemType = href.includes('series') ? 'series' : 'movie';
+        const itemId = 'toon' + (href.split('/').filter(Boolean).pop() || Date.now().toString());
+        
+        return {
+          id: itemId,
+          type: itemType,
+          name: title,
+          poster: fixUrl(posterUrl),
+          url: fixUrl(href)
+        };
+      });
+      
+      const hasNextPage = doc.querySelector('a.next') !== null;
+      
+      return {
+        metas: items,
+        cacheMaxAge: 3600, // Cache for 1 hour
+        hasNext: hasNextPage,
+        nextCursor: hasNextPage ? (page * 20).toString() : null
+      };
+      
+    } catch (error) {
+      console.error(`[Toonstream] Catalog error: ${error.message}`);
+      return { metas: [], cacheMaxAge: 300 };
     }
-    return streams;
+  },
+
+  // Meta handler - returns detailed information about an item
+  getMeta: async function(args) {
+    const { type, id } = args;
+    const realId = id.replace('toon', '');
+    
+    console.log(`[Toonstream] Fetching meta for: ${id}`);
+    
+    // Check cache first
+    if (cache.meta[id]) {
+      return cache.meta[id];
+    }
+    
+    try {
+      // We need to find the actual URL - in a real app, you'd store this mapping
+      // For now, we'll search for it
+      const searchUrl = `${TOONSTREAM_BASE}/?s=${encodeURIComponent(realId)}`;
+      const searchHtml = await makeRequest(searchUrl);
+      const searchDoc = parseHTML(searchHtml);
+      
+      const firstResult = searchDoc.querySelector("#movies-a > ul > li article > a");
+      if (!firstResult) {
+        throw new Error('Content not found');
+      }
+      
+      const contentUrl = fixUrl(firstResult.getAttribute("href"));
+      const html = await makeRequest(contentUrl);
+      const doc = parseHTML(html);
+      
+      const titleElement = doc.querySelector("header.entry-header > h1");
+      const posterElement = doc.querySelector("div.bghd > img");
+      const descriptionElement = doc.querySelector("div.description > p");
+      
+      const title = titleElement ? titleElement.textContent.trim().replace("Watch Online", "") : "Unknown";
+      let posterUrl = posterElement ? posterElement.getAttribute("src") : "";
+      const description = descriptionElement ? descriptionElement.textContent.trim() : "";
+      
+      const isSeries = type === 'series' || contentUrl.includes('series');
+      
+      const meta = {
+        id: id,
+        type: isSeries ? 'series' : 'movie',
+        name: title,
+        poster: fixUrl(posterUrl),
+        background: fixUrl(posterUrl),
+        description: description,
+        genres: isSeries ? ['Cartoon', 'Animation'] : ['Movie', 'Animation'],
+        releaseInfo: new Date().getFullYear().toString(),
+        imdbRating: '7.5',
+        runtime: '90 min',
+        videos: []
+      };
+      
+      if (isSeries) {
+        // Fetch seasons and episodes
+        const seasonElements = doc.querySelectorAll("div.aa-drp.choose-season > ul > li > a");
+        
+        for (let i = 0; i < seasonElements.length; i++) {
+          const seasonElement = seasonElements[i];
+          const dataPost = seasonElement.getAttribute("data-post");
+          const dataSeason = seasonElement.getAttribute("data-season");
+          
+          const formData = new URLSearchParams();
+          formData.append("action", "action_select_season");
+          formData.append("season", dataSeason);
+          formData.append("post", dataPost);
+          
+          try {
+            const response = await fetch(`${TOONSTREAM_BASE}/wp-admin/admin-ajax.php`, {
+              method: "POST",
+              headers: {
+                ...BASE_HEADERS,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest"
+              },
+              body: formData.toString()
+            });
+            
+            if (response.ok) {
+              const seasonHtml = await response.text();
+              const seasonDoc = parseHTML(seasonHtml);
+              const episodeElements = seasonDoc.querySelectorAll("article");
+              
+              episodeElements.forEach((episodeElement, epIndex) => {
+                const episodeTitleElement = episodeElement.querySelector("article > header.entry-header > h2");
+                const episodeTitle = episodeTitleElement ? episodeTitleElement.textContent.trim() : `Episode ${epIndex + 1}`;
+                
+                meta.videos.push({
+                  id: `${id}:${i + 1}:${epIndex + 1}`,
+                  title: episodeTitle,
+                  season: i + 1,
+                  episode: epIndex + 1,
+                  released: new Date().toISOString()
+                });
+              });
+            }
+          } catch (error) {
+            console.log(`[Toonstream] Error loading season ${i + 1}: ${error.message}`);
+          }
+        }
+        
+        if (meta.videos.length === 0) {
+          // Add some placeholder episodes
+          for (let i = 1; i <= 10; i++) {
+            meta.videos.push({
+              id: `${id}:1:${i}`,
+              title: `Episode ${i}`,
+              season: 1,
+              episode: i,
+              released: new Date().toISOString()
+            });
+          }
+        }
+      } else {
+        // For movies, add a single video
+        meta.videos = [{
+          id: `${id}:movie`,
+          title: 'Movie',
+          released: new Date().toISOString()
+        }];
+      }
+      
+      // Cache the meta
+      cache.meta[id] = meta;
+      setTimeout(() => delete cache.meta[id], 3600000); // Clear cache after 1 hour
+      
+      return meta;
+      
+    } catch (error) {
+      console.error(`[Toonstream] Meta error: ${error.message}`);
+      // Return basic meta as fallback
+      return {
+        id: id,
+        type: type,
+        name: realId.replace(/-/g, ' '),
+        description: 'Content from Toonstream',
+        genres: ['Animation'],
+        releaseInfo: new Date().getFullYear().toString()
+      };
+    }
+  },
+
+  // Stream handler - returns streaming links
+  getStreams: async function(args) {
+    const { type, id } = args;
+    console.log(`[Toonstream] Fetching streams for: ${id}`);
+    
+    // Check cache first
+    const cacheKey = `${type}:${id}`;
+    if (cache.streams[cacheKey]) {
+      return cache.streams[cacheKey];
+    }
+    
+    try {
+      let contentUrl;
+      
+      if (id.includes(':')) {
+        // It's a video ID with season:episode or movie format
+        const parts = id.split(':');
+        const contentId = parts[0];
+        
+        // Find the content URL (in real app, you'd have this mapped)
+        const searchUrl = `${TOONSTREAM_BASE}/?s=${encodeURIComponent(contentId.replace('toon', ''))}`;
+        const searchHtml = await makeRequest(searchUrl);
+        const searchDoc = parseHTML(searchHtml);
+        
+        const firstResult = searchDoc.querySelector("#movies-a > ul > li article > a");
+        if (!firstResult) {
+          throw new Error('Content not found');
+        }
+        
+        contentUrl = fixUrl(firstResult.getAttribute("href"));
+        
+        // For series, we need to find the specific episode
+        if (parts.length === 3 && type === 'series') {
+          const season = parseInt(parts[1]);
+          const episode = parseInt(parts[2]);
+          
+          // Load the series page to find episode
+          const seriesHtml = await makeRequest(contentUrl);
+          const seriesDoc = parseHTML(seriesHtml);
+          
+          // Find the specific episode URL (simplified - real implementation would parse all episodes)
+          const episodeLinks = seriesDoc.querySelectorAll("div.aa-drp.choose-season > ul > li > a");
+          if (episodeLinks.length >= season) {
+            const seasonElement = episodeLinks[season - 1];
+            const dataPost = seasonElement.getAttribute("data-post");
+            const dataSeason = seasonElement.getAttribute("data-season");
+            
+            const formData = new URLSearchParams();
+            formData.append("action", "action_select_season");
+            formData.append("season", dataSeason);
+            formData.append("post", dataPost);
+            
+            const response = await fetch(`${TOONSTREAM_BASE}/wp-admin/admin-ajax.php`, {
+              method: "POST",
+              headers: {
+                ...BASE_HEADERS,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest"
+              },
+              body: formData.toString()
+            });
+            
+            if (response.ok) {
+              const seasonHtml = await response.text();
+              const seasonDoc = parseHTML(seasonHtml);
+              const episodeElements = seasonDoc.querySelectorAll("article");
+              
+              if (episodeElements.length >= episode) {
+                const episodeElement = episodeElements[episode - 1];
+                const episodeLink = episodeElement.querySelector("article > a");
+                if (episodeLink) {
+                  contentUrl = fixUrl(episodeLink.getAttribute("href"));
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // Simple content ID
+        const searchUrl = `${TOONSTREAM_BASE}/?s=${encodeURIComponent(id.replace('toon', ''))}`;
+        const searchHtml = await makeRequest(searchUrl);
+        const searchDoc = parseHTML(searchHtml);
+        
+        const firstResult = searchDoc.querySelector("#movies-a > ul > li article > a");
+        if (!firstResult) {
+          throw new Error('Content not found');
+        }
+        
+        contentUrl = fixUrl(firstResult.getAttribute("href"));
+      }
+      
+      // Extract streaming links from the content page
+      const html = await makeRequest(contentUrl);
+      const doc = parseHTML(html);
+      const iframeElements = doc.querySelectorAll("#aa-options > div > iframe");
+      
+      const streamPromises = Array.from(iframeElements).map(async (iframe, index) => {
+        const serverLink = iframe.getAttribute("data-src");
+        if (!serverLink) return null;
+        
+        try {
+          const iframeHtml = await makeRequest(serverLink);
+          const iframeDoc = parseHTML(iframeHtml);
+          const nestedIframe = iframeDoc.querySelector("iframe");
+          
+          if (nestedIframe) {
+            const trueLink = nestedIframe.getAttribute("src");
+            
+            // Check if it's an AWSStream link
+            if (trueLink.includes('awstream') || trueLink.includes('zephyrflick')) {
+              return extractAWSStreamLink(trueLink, index);
+            }
+            
+            return {
+              name: `Toonstream Source ${index + 1}`,
+              title: `Toonstream - Source ${index + 1}`,
+              url: trueLink,
+              behaviorHints: {
+                notWebReady: true,
+                bingeGroup: `toonstream-${id}`
+              }
+            };
+          }
+        } catch (error) {
+          console.log(`[Toonstream] Error extracting iframe ${index}: ${error.message}`);
+        }
+        
+        return null;
+      });
+      
+      const streams = (await Promise.all(streamPromises))
+        .filter(stream => stream !== null)
+        .map(stream => ({
+          ...stream,
+          ytId: null, // For YouTube streams
+          infoHash: null, // For torrent streams
+          fileIdx: null // For torrent files
+        }));
+      
+      // Cache the streams
+      cache.streams[cacheKey] = { streams };
+      setTimeout(() => delete cache.streams[cacheKey], 1800000); // Clear cache after 30 minutes
+      
+      return { streams };
+      
+    } catch (error) {
+      console.error(`[Toonstream] Stream error: ${error.message}`);
+      return { streams: [] };
+    }
+  },
+
+  // Optional: Search handler
+  search: async function(args) {
+    const { query, type } = args;
+    console.log(`[Toonstream] Searching for: "${query}"`);
+    
+    try {
+      const searchUrl = `${TOONSTREAM_BASE}/?s=${encodeURIComponent(query)}`;
+      const html = await makeRequest(searchUrl);
+      const doc = parseHTML(html);
+      
+      const items = Array.from(doc.querySelectorAll("#movies-a > ul > li")).map((item) => {
+        const titleElement = item.querySelector("article > header > h2");
+        const linkElement = item.querySelector("article > a");
+        const imageElement = item.querySelector("article > div.post-thumbnail > figure > img");
+        
+        const title = titleElement ? titleElement.textContent.trim().replace("Watch Online", "") : "Unknown";
+        const href = linkElement ? linkElement.getAttribute("href") : "";
+        const posterUrl = imageElement ? imageElement.getAttribute("src") : "";
+        
+        const itemType = href.includes('series') ? 'series' : 'movie';
+        const itemId = 'toon' + (href.split('/').filter(Boolean).pop() || Date.now().toString());
+        
+        return {
+          id: itemId,
+          type: itemType,
+          name: title,
+          poster: fixUrl(posterUrl),
+          description: `Search result for: ${query}`
+        };
+      });
+      
+      return { metas: items };
+      
+    } catch (error) {
+      console.error(`[Toonstream] Search error: ${error.message}`);
+      return { metas: [] };
+    }
+  }
+};
+
+// Helper function for AWSStream extraction
+async function extractAWSStreamLink(url, index) {
+  console.log(`[Toonstream] Extracting AWSStream link: ${url}`);
+  
+  try {
+    // Extract hash from URL
+    const extractedHash = url.substring(url.lastIndexOf("/") + 1);
+    
+    // Make request to AWSStream API
+    const m3u8Url = `https://z.awstream.net/player/index.php?data=${extractedHash}&do=getVideo`;
+    const formData = new URLSearchParams();
+    formData.append("hash", extractedHash);
+    formData.append("r", "https://z.awstream.net");
+    
+    const response = await fetch(m3u8Url, {
+      method: "POST",
+      headers: {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: formData.toString()
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.videoSource) {
+        return {
+          name: `AWSStream Source ${index + 1}`,
+          title: `AWSStream - ${data.quality || 'HD'}`,
+          url: data.videoSource,
+          behaviorHints: {
+            notWebReady: true,
+            bingeGroup: `awstream-${extractedHash}`
+          }
+        };
+      }
+    }
+  } catch (error) {
+    console.log(`[Toonstream] AWSStream error: ${error.message}`);
+  }
+  
+  // Fallback to original URL
+  return {
+    name: `Toonstream Source ${index + 1}`,
+    title: `Toonstream - Source ${index + 1}`,
+    url: url,
+    behaviorHints: {
+      notWebReady: true,
+      bingeGroup: `toonstream-fallback`
+    }
+  };
+}
+
+// Nuvio provider export
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = provider;
+} else if (typeof define === 'function' && define.amd) {
+  define([], function() { return provider; });
+} else if (typeof window !== 'undefined') {
+  window.toonstreamProvider = provider;
 }
