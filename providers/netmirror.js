@@ -306,16 +306,20 @@ function getStreamingLinks(contentId, title, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // CRITICAL FIX: Use correct playlist endpoints based on platform
+    // FIXED: Correct playlist endpoints for each platform
     let playlistUrl;
     if (platform.toLowerCase() === "primevideo") {
-      // PrimeVideo uses different playlist endpoint
+      // PrimeVideo: tv/pv/playlist.php
       playlistUrl = `${NETMIRROR_BASE}tv/pv/playlist.php`;
     } else if (platform.toLowerCase() === "disney") {
-      playlistUrl = `${NETMIRROR_BASE}tv/hs/playlist.php`;
+      // Disney: mobile/hs/playlist.php (NOT tv/hs/playlist.php)
+      playlistUrl = `${NETMIRROR_BASE}mobile/hs/playlist.php`;
     } else {
+      // Netflix: tv/playlist.php
       playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
     }
+    
+    console.log(`[NetMirror] Using playlist endpoint: ${playlistUrl}`);
     
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
@@ -330,18 +334,75 @@ function getStreamingLinks(contentId, title, platform) {
     return response.json();
   }).then(function(playlist) {
     if (!Array.isArray(playlist) || playlist.length === 0) {
-      console.log("[NetMirror] No streaming links found");
+      console.log(`[NetMirror] No streaming links found for ${platform}`);
+      
+      // Debug: try alternative Disney endpoint if first fails
+      if (platform.toLowerCase() === "disney") {
+        console.log(`[NetMirror] Trying alternative Disney endpoint...`);
+        return bypass().then(function(cookie) {
+          const cookies = {
+            "t_hash_t": cookie,
+            "user_token": "233123f803cf02184bf6c67e149cdd50",
+            "ott": "hs",
+            "hd": "on"
+          };
+          const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
+          
+          // Try the tv/hs/playlist.php endpoint
+          return makeRequest(
+            `${NETMIRROR_BASE}tv/hs/playlist.php?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
+            {
+              headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+                "Cookie": cookieString,
+                "Referer": `${NETMIRROR_BASE}tv/home`
+              })
+            }
+          ).then(function(response) {
+            return response.json();
+          }).then(function(altPlaylist) {
+            if (!Array.isArray(altPlaylist) || altPlaylist.length === 0) {
+              console.log(`[NetMirror] Alternative Disney endpoint also failed`);
+              return { sources: [], subtitles: [] };
+            }
+            console.log(`[NetMirror] Alternative Disney endpoint succeeded!`);
+            return processPlaylist(altPlaylist, platform);
+          });
+        });
+      }
+      
       return { sources: [], subtitles: [] };
     }
+    return processPlaylist(playlist, platform);
+  });
+  
+  // Helper function to process playlist data
+  function processPlaylist(playlist, platform) {
     const sources = [];
     const subtitles = [];
+    
     playlist.forEach((item) => {
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
           
-          // Apply the Kotlin logic: replace "/tv/" with "/"
-          fullUrl = fullUrl.replace("/tv/", "/");
+          // Apply platform-specific URL transformations
+          if (platform.toLowerCase() === "primevideo") {
+            // PrimeVideo: remove /tv/ prefix
+            fullUrl = fullUrl.replace("/tv/", "/");
+          } else if (platform.toLowerCase() === "disney") {
+            // Disney: might have mobile/hs/hls/ path
+            if (fullUrl.includes("/tv/")) {
+              fullUrl = fullUrl.replace("/tv/", "/");
+            }
+            // Ensure it has the correct Disney path
+            if (!fullUrl.includes("mobile/hs/") && fullUrl.includes("hls/")) {
+              const filename = fullUrl.split('/').pop();
+              fullUrl = `/mobile/hs/hls/${filename}`;
+            }
+          } else {
+            // Netflix: remove /tv/ prefix
+            fullUrl = fullUrl.replace("/tv/", "/");
+          }
           
           // Ensure it starts with a slash
           if (!fullUrl.startsWith("/")) {
@@ -354,7 +415,7 @@ function getStreamingLinks(contentId, title, platform) {
           // Clean up any double slashes
           fullUrl = fullUrl.replace(/([^:])\/\//g, '$1/');
           
-          // Extract quality from URL if available
+          // Extract quality
           let quality = "HD";
           if (fullUrl.includes('q=')) {
             const qualityMatch = fullUrl.match(/q=(\d+p)/i);
@@ -375,6 +436,7 @@ function getStreamingLinks(contentId, title, platform) {
           });
         });
       }
+      
       if (item.tracks) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
           let fullSubUrl = track.file;
@@ -390,19 +452,23 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
     });
-    console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
+    
+    console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks for ${platform}`);
     
     // Debug: show URLs
     if (sources.length > 0) {
-      console.log("[NetMirror] Generated URLs:");
+      console.log(`[NetMirror] ${platform} URLs:`);
       sources.forEach((source, i) => {
         console.log(`  ${i + 1}. ${source.url}`);
       });
+    } else {
+      console.log(`[NetMirror] WARNING: No sources found for ${platform}`);
     }
     
     return { sources, subtitles };
-  });
+  }
 }
+          
 
 function findEpisodeId(episodes, season, episode) {
   if (!episodes || episodes.length === 0) {
