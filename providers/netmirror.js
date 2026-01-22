@@ -341,21 +341,29 @@ function getStreamingLinks(contentId, title, platform) {
           }
 
           const isDisney = platform.toLowerCase() === "disney";
-          const isNetflix = platform.toLowerCase() === "netflix";
+const isNetflix = platform.toLowerCase() === "netflix";
+const isPrime = platform.toLowerCase() === "primevideo";
 
-          const streamHeaders = {
-            "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
-            "Origin": "https://net51.cc",
-            "Referer": isDisney
-              ? "https://net51.cc/mobile/hs/home"
-              : isNetflix
-              ? "https://net51.cc/home"
-              : "https://net51.cc/tv/home",
-            "Cookie": "hd=on",
-            "User-Agent": isDisney
-              ? "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/120"
-              : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-          };
+const streamHeaders = {
+  "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
+  "Origin": "https://net51.cc",
+  "Referer": isDisney
+    ? "https://net51.cc/mobile/hs/home"
+    : isNetflix
+    ? "https://net51.cc/home"
+    : "https://net51.cc/tv/home",
+  "User-Agent": isDisney
+    ? "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/120"
+    : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+};
+
+/* 🔑 Platform-specific requirements */
+if (isPrime) {
+  streamHeaders["Cookie"] = "hd=on; ott=pv";
+  streamHeaders["Range"] = "bytes=0-";
+} else {
+  streamHeaders["Cookie"] = "hd=on";
+}
 
           // REMOVED: The Range header block that was causing Error 22004
 
