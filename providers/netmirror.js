@@ -319,10 +319,31 @@ function getStreamingLinks(contentId, title, platform) {
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
-          fullUrl = fullUrl.replace("/tv/", "/");
-          if (!fullUrl.startsWith("/"))
-            fullUrl = "/" + fullUrl;
-          fullUrl = NETMIRROR_BASE + fullUrl;
+          
+          // ========== PRIMEVIDEO URL FIX ==========
+          if (platform.toLowerCase() === "primevideo") {
+            // USE THE URL EXACTLY AS PROVIDED - DO NOT MODIFY
+            // Only ensure it's a valid absolute URL
+            if (fullUrl.startsWith("//")) {
+              fullUrl = "https:" + fullUrl;
+            } else if (fullUrl.startsWith("/")) {
+              // Add base, but be careful not to add double slash if base already ends with one
+              const base = NETMIRROR_BASE.endsWith('/') ? NETMIRROR_BASE.slice(0, -1) : NETMIRROR_BASE;
+              fullUrl = base + fullUrl;
+            }
+            // If it's already a full http(s) URL, leave it alone.
+          } else {
+            // Original logic for Netflix/Disney (unchanged)
+            fullUrl = fullUrl.replace("/tv/", "/");
+            if (!fullUrl.startsWith("/")) {
+              fullUrl = "/" + fullUrl;
+            }
+            fullUrl = NETMIRROR_BASE + fullUrl;
+          }
+          
+          // Clean up any *accidental* double slashes in the protocol only
+          fullUrl = fullUrl.replace(/(https?:)\/+/g, '$1//');
+          
           sources.push({
             url: fullUrl,
             quality: source.label,
@@ -346,6 +367,12 @@ function getStreamingLinks(contentId, title, platform) {
       }
     });
     console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
+    
+    // Debug log for PrimeVideo URLs
+    if (platform.toLowerCase() === "primevideo" && sources.length > 0) {
+      console.log(`[NetMirror] PrimeVideo sample URL: ${sources[0].url}`);
+    }
+    
     return { sources, subtitles };
   });
 }
@@ -536,13 +563,19 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 }
                 const lowerPlatform = (platform || "").toLowerCase();
                 const isNfOrPv = lowerPlatform === "netflix" || lowerPlatform === "primevideo";
+                
+                // Updated headers - minimal for PrimeVideo
                 const streamHeaders = {
                   "Accept": "application/vnd.apple.mpegurl, video/mp4, */*",
-                  "Origin": isNfOrPv ? "https://net51.cc" : "https://net51.cc",
-                  "Referer": isNfOrPv ? "https://net51.cc/" : "https://net51.cc/tv/home",
-                  "Cookie": "hd=on",
-                  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/138.0.7204.156 Mobile/15E148 Safari/604.1"
+                  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+                  "Origin": "https://net51.cc"
                 };
+                
+                // Only add Referer for Netflix/Disney, NOT for PrimeVideo
+                if (platform.toLowerCase() !== "primevideo") {
+                  streamHeaders["Referer"] = isNfOrPv ? "https://net51.cc/" : "https://net51.cc/tv/home";
+                }
+                
                 return {
                   name: `NetMirror (${platform.charAt(0).toUpperCase() + platform.slice(1)})`,
                   title: streamTitle,
