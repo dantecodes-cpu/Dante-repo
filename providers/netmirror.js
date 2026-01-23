@@ -97,11 +97,11 @@ function searchContent(query, platform) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
     const cookies = {
-    "t_hash_t": cookie,
-    "user_token": "a0a5f663894ade410614071fe46baca6", // ← CLOUDSTREAM TOKEN
-    "ott": ott,
-    "hd": "on"
-};
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "ott": ott,
+      "hd": "on"
+    };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const searchEndpoints = {
       "netflix": `${NETMIRROR_BASE}search.php`,
@@ -143,11 +143,11 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
     const cookies = {
-    "t_hash_t": cookie,
-    "user_token": "a0a5f663894ade410614071fe46baca6", // ← CLOUDSTREAM TOKEN
-    "ott": ott,
-    "hd": "on"
-};
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "ott": ott,
+      "hd": "on"
+    };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const episodes = [];
     let currentPage = page || 1;
@@ -195,11 +195,11 @@ function loadContent(contentId, platform) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
     const cookies = {
-    "t_hash_t": cookie,
-    "user_token": "a0a5f663894ade410614071fe46baca6", // ← CLOUDSTREAM TOKEN
-    "ott": ott,
-    "hd": "on"
-};
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "ott": ott,
+      "hd": "on"
+    };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const postEndpoints = {
       "netflix": `${NETMIRROR_BASE}post.php`,
@@ -274,13 +274,12 @@ function getStreamingLinks(contentId, title, platform) {
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
-// REPLACE ALL your user_token values with Cloudstream's:
-const cookies = {
-    "t_hash_t": cookie,
-    "user_token": "a0a5f663894ade410614071fe46baca6", // ← CLOUDSTREAM'S TOKEN
-    "hd": "on",
-    "ott": ott
-};
+    const cookies = {
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "hd": "on",
+      "ott": ott
+    };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     let playlistUrl;
     if (platform.toLowerCase() === "primevideo") {
@@ -313,35 +312,15 @@ const cookies = {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
           
-          // ========== PRIMEVIDEO URL FIX ==========
-          if (platform.toLowerCase() === "primevideo") {
-            // USE THE URL EXACTLY AS PROVIDED - DO NOT MODIFY
-            // Only ensure it's a valid absolute URL
+          // ✅ ONLY fix RELATIVE URLs
+          if (!fullUrl.startsWith("http")) {
             if (fullUrl.startsWith("//")) {
-              let fullUrl = source.file;
-
-// 🔒 SIGNED STREAM URL (Prime / NF / Disney)
-if (fullUrl.includes("?in=")) {
-  // DO NOT TOUCH — opaque signed URL
-  if (fullUrl.startsWith("//")) {
-    fullUrl = "https:" + fullUrl;
-  } else if (fullUrl.startsWith("/")) {
-    fullUrl = "https://net51.cc" + fullUrl;
-  }
-} 
-// 🔓 NON-SIGNED URL (safe to normalize)
-else {
-  if (fullUrl.startsWith("//")) {
-    fullUrl = "https:" + fullUrl;
-  } else if (fullUrl.startsWith("/")) {
-    fullUrl = "https://net51.cc" + fullUrl;
-  } else if (!fullUrl.startsWith("http")) {
-    fullUrl = "https://net51.cc/" + fullUrl;
-  }
-
-  // safe cleanup ONLY for non-signed URLs
-  fullUrl = fullUrl.replace(/(https?:)\/+/g, "$1//");
-}
+              fullUrl = "https:" + fullUrl;
+            } else {
+              fullUrl = "https://net51.cc" + fullUrl;
+            }
+          }
+          // ❌ Do NOTHING else to the URL
           
           sources.push({
             url: fullUrl,
@@ -563,15 +542,12 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 const lowerPlatform = (platform || "").toLowerCase();
                 const isNfOrPv = lowerPlatform === "netflix" || lowerPlatform === "primevideo";
                 
-                // Updated headers - minimal for PrimeVideo
+                // ✅ Correct headers - ALWAYS include Referer (Cloudstream behavior)
                 const streamHeaders = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
-  "Accept": "*/*"
-};
-
-if (platform.toLowerCase() !== "primevideo") {
-  streamHeaders["Referer"] = "https://net51.cc/";
-}
+                  "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
+                  "Accept": "*/*",
+                  "Referer": "https://net51.cc/"
+                };
                 
                 return {
                   name: `NetMirror (${platform.charAt(0).toUpperCase() + platform.slice(1)})`,
