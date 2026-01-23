@@ -287,8 +287,7 @@ function getStreamingLinks(contentId, title, platform) {
     } else if (platform.toLowerCase() === "disney") {
       playlistUrl = `${NETMIRROR_BASE}mobile/hs/playlist.php`;
     } else {
-      // ✅ ONLY change: Remove /tv/ from Netflix playlist URL
-      playlistUrl = `${NETMIRROR_BASE}playlist.php`;
+      playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
     }
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
