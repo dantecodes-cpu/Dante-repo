@@ -2,6 +2,27 @@
   "name": "Dante's Repo",
   "version": "1.0.0",
   "scrapers": [
+        {
+      "id": "NetMirror2",
+      "name": "NetMirror2",
+      "description": "Streaming links from netmirror. Automatically disabled on iOS due to compatibility issues.",
+      "version": "1.0.2",
+      "author": "Dante",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/NetMirror2.js",
+      "enabled": true,
+      "logo": "https://net2025.cc/favicon.ico",
+      "contentLanguage": [
+        "en"
+      ],
+      "disabledPlatforms": [
+        "ios"
+      ],
+      "supportsExternalPlayer": false
+    },
     {
       "id": "Toonstream",
       "name": "Toonstream",
