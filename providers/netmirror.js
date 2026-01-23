@@ -103,12 +103,19 @@ function searchContent(query, platform) {
       "hd": "on"
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    const searchEndpoints = {
-      "netflix": `${NETMIRROR_BASE}search.php`,
-      "primevideo": `${NETMIRROR_BASE}pv/search.php`,
-      "disney": `${NETMIRROR_BASE}mobile/hs/search.php`
-    };
-    const searchUrl = searchEndpoints[platform.toLowerCase()] || searchEndpoints["netflix"];
+    
+    // Build search URLs - remove /tv/ for Netflix
+    let searchUrl;
+    if (platform.toLowerCase() === "netflix") {
+      searchUrl = `${NETMIRROR_BASE}search.php`;
+    } else if (platform.toLowerCase() === "primevideo") {
+      searchUrl = `${NETMIRROR_BASE}pv/search.php`;
+    } else if (platform.toLowerCase() === "disney") {
+      searchUrl = `${NETMIRROR_BASE}mobile/hs/search.php`;
+    } else {
+      searchUrl = `${NETMIRROR_BASE}search.php`;
+    }
+    
     return makeRequest(
       `${searchUrl}?s=${encodeURIComponent(query)}&t=${getUnixTime()}`,
       {
@@ -151,12 +158,19 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const episodes = [];
     let currentPage = page || 1;
-    const episodesEndpoints = {
-      "netflix": `${NETMIRROR_BASE}episodes.php`,
-      "primevideo": `${NETMIRROR_BASE}pv/episodes.php`,
-      "disney": `${NETMIRROR_BASE}mobile/hs/episodes.php`
-    };
-    const episodesUrl = episodesEndpoints[platform.toLowerCase()] || episodesEndpoints["netflix"];
+    
+    // Build episodes URLs - remove /tv/ for Netflix
+    let episodesUrl;
+    if (platform.toLowerCase() === "netflix") {
+      episodesUrl = `${NETMIRROR_BASE}episodes.php`;
+    } else if (platform.toLowerCase() === "primevideo") {
+      episodesUrl = `${NETMIRROR_BASE}pv/episodes.php`;
+    } else if (platform.toLowerCase() === "disney") {
+      episodesUrl = `${NETMIRROR_BASE}mobile/hs/episodes.php`;
+    } else {
+      episodesUrl = `${NETMIRROR_BASE}episodes.php`;
+    }
+    
     function fetchPage(pageNum) {
       return makeRequest(
         `${episodesUrl}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${pageNum}`,
@@ -201,12 +215,19 @@ function loadContent(contentId, platform) {
       "hd": "on"
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    const postEndpoints = {
-      "netflix": `${NETMIRROR_BASE}post.php`,
-      "primevideo": `${NETMIRROR_BASE}pv/post.php`,
-      "disney": `${NETMIRROR_BASE}mobile/hs/post.php`
-    };
-    const postUrl = postEndpoints[platform.toLowerCase()] || postEndpoints["netflix"];
+    
+    // Build post URLs - remove /tv/ for Netflix
+    let postUrl;
+    if (platform.toLowerCase() === "netflix") {
+      postUrl = `${NETMIRROR_BASE}post.php`;
+    } else if (platform.toLowerCase() === "primevideo") {
+      postUrl = `${NETMIRROR_BASE}pv/post.php`;
+    } else if (platform.toLowerCase() === "disney") {
+      postUrl = `${NETMIRROR_BASE}mobile/hs/post.php`;
+    } else {
+      postUrl = `${NETMIRROR_BASE}post.php`;
+    }
+    
     return makeRequest(
       `${postUrl}?id=${contentId}&t=${getUnixTime()}`,
       {
@@ -281,14 +302,19 @@ function getStreamingLinks(contentId, title, platform) {
       "ott": ott
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
+    
+    // Build playlist URLs - remove /tv/ for Netflix, keep /tv/pv/ for PrimeVideo
     let playlistUrl;
-    if (platform.toLowerCase() === "primevideo") {
+    if (platform.toLowerCase() === "netflix") {
+      playlistUrl = `${NETMIRROR_BASE}playlist.php`;
+    } else if (platform.toLowerCase() === "primevideo") {
       playlistUrl = `${NETMIRROR_BASE}tv/pv/playlist.php`;
     } else if (platform.toLowerCase() === "disney") {
       playlistUrl = `${NETMIRROR_BASE}mobile/hs/playlist.php`;
     } else {
-      playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
+      playlistUrl = `${NETMIRROR_BASE}playlist.php`;
     }
+    
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
       {
