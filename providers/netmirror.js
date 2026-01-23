@@ -309,49 +309,41 @@ function getStreamingLinks(contentId, title, platform) {
     const subtitles = [];
     playlist.forEach((item) => {
       if (item.sources) {
+
         item.sources.forEach((source) => {
-          let fullUrl = source.file;
+  const rawPath = source.file;
 
-          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
-let fullUrl = source.file;
+  const isTv = mediaType === "tv";
+  const isMovie = mediaType === "movie";
 
-          const isTv = mediaType === "tv";
-const isMovie = mediaType === "movie";
+  // ⛔ Cloudstream-style strict filtering
+  if (isTv && !rawPath.includes("/tv/")) return;
+  if (isMovie && rawPath.includes("/tv/")) return;
 
-const path = source.file;
+  let fullUrl = rawPath;
 
-// ⛔ Reject wrong media early
-if (isTv && !path.includes("/tv/")) {
-  return; // skip movie result
-}
+  // 🔧 Netflix path fix (ONLY after validation)
+  if (platform.toLowerCase() === "netflix") {
+    fullUrl = fullUrl
+      .replace("://net51.cc/tv/", "://net51.cc/")
+      .replace(/^\/tv\//, "/");
+  }
 
-if (isMovie && path.includes("/tv/")) {
-  return; // skip TV result
-}
+  // ✅ Fix relative URLs only
+  if (!fullUrl.startsWith("http")) {
+    if (fullUrl.startsWith("//")) {
+      fullUrl = "https:" + fullUrl;
+    } else {
+      fullUrl = "https://net51.cc" + fullUrl;
+    }
+  }
 
-// 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
-if (platform.toLowerCase() === "netflix") {
-  fullUrl = fullUrl
-    .replace("://net51.cc/tv/", "://net51.cc/")
-    .replace(/^\/tv\//, "/");
-}
-          
-          // ✅ ONLY fix RELATIVE URLs
-          if (!fullUrl.startsWith("http")) {
-            if (fullUrl.startsWith("//")) {
-              fullUrl = "https:" + fullUrl;
-            } else {
-              fullUrl = "https://net51.cc" + fullUrl;
-            }
-          }
-          // ❌ Do NOTHING else to the URL
-          
-          sources.push({
-            url: fullUrl,
-            quality: source.label,
-            type: source.type || "application/x-mpegURL"
-          });
-        });
+  sources.push({
+    url: fullUrl,
+    quality: source.label,
+    type: source.type || "application/x-mpegURL"
+  });
+});
       }
       if (item.tracks) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
