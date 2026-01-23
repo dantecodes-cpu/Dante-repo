@@ -417,22 +417,30 @@ function getStreamingLinks(contentId, title, platform) {
                 variantUrl = `${basePath}?${newParams.toString()}`;
               }
               
-              // Ensure URL has proper in= parameter format
-              if (variantUrl.includes('in=')) {
-                // Fix the in= parameter to use Cloudstream's token
-                const inMatch = variantUrl.match(/in=([^&]+)/);
-                if (inMatch) {
-                  const inParts = inMatch[1].split('::');
-                  if (inParts.length >= 4) {
-                    // Replace first part with Cloudstream's token
-                    inParts[0] = cloudstreamToken;
-                    // Update timestamp
-                    inParts[2] = getUnixTime().toString();
-                    const newInParam = inParts.join('::');
-                    variantUrl = variantUrl.replace(/in=[^&]+/, `in=${newInParam}`);
-                  }
-                }
-              }
+// In getStreamingLinks function, replace the section that builds variantUrl:
+if (variantUrl.includes('in=')) {
+  // Decode any already-encoded parameters first
+  variantUrl = decodeURIComponent(variantUrl);
+  
+  const inMatch = variantUrl.match(/in=([^&]+)/);
+  if (inMatch) {
+    const inParts = inMatch[1].split('::');
+    if (inParts.length >= 4) {
+      // Replace first part with Cloudstream's token
+      inParts[0] = cloudstreamToken;
+      // Update timestamp
+      inParts[2] = getUnixTime().toString();
+      const newInParam = inParts.join('::');
+      
+      // Replace the in parameter (don't encode colons)
+      variantUrl = variantUrl.replace(/in=[^&]+/, `in=${newInParam}`);
+      
+      console.log(`[NetMirror] Updated in parameter for ${platform} ${quality}: ${newInParam}`);
+    }
+  }
+}
+
+              
               
               console.log(`[NetMirror] ${platform} ${quality} URL: ${variantUrl.substring(0, 150)}...`);
               
