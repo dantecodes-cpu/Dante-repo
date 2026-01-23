@@ -309,41 +309,35 @@ function getStreamingLinks(contentId, title, platform) {
     const subtitles = [];
     playlist.forEach((item) => {
       if (item.sources) {
-
         item.sources.forEach((source) => {
-  const rawPath = source.file;
+          let fullUrl = source.file;
 
-  const isTv = mediaType === "tv";
-  const isMovie = mediaType === "movie";
+          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
+let fullUrl = source.file;
 
-  // ⛔ Cloudstream-style strict filtering
-  if (isTv && !rawPath.includes("/tv/")) return;
-  if (isMovie && rawPath.includes("/tv/")) return;
-
-  let fullUrl = rawPath;
-
-  // 🔧 Netflix path fix (ONLY after validation)
-  if (platform.toLowerCase() === "netflix") {
-    fullUrl = fullUrl
-      .replace("://net51.cc/tv/", "://net51.cc/")
-      .replace(/^\/tv\//, "/");
-  }
-
-  // ✅ Fix relative URLs only
-  if (!fullUrl.startsWith("http")) {
-    if (fullUrl.startsWith("//")) {
-      fullUrl = "https:" + fullUrl;
-    } else {
-      fullUrl = "https://net51.cc" + fullUrl;
-    }
-  }
-
-  sources.push({
-    url: fullUrl,
-    quality: source.label,
-    type: source.type || "application/x-mpegURL"
-  });
-});
+// 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
+if (platform.toLowerCase() === "netflix") {
+  fullUrl = fullUrl
+    .replace("://net51.cc/tv/", "://net51.cc/")
+    .replace(/^\/tv\//, "/");
+}
+          
+          // ✅ ONLY fix RELATIVE URLs
+          if (!fullUrl.startsWith("http")) {
+            if (fullUrl.startsWith("//")) {
+              fullUrl = "https:" + fullUrl;
+            } else {
+              fullUrl = "https://net51.cc" + fullUrl;
+            }
+          }
+          // ❌ Do NOTHING else to the URL
+          
+          sources.push({
+            url: fullUrl,
+            quality: source.label,
+            type: source.type || "application/x-mpegURL"
+          });
+        });
       }
       if (item.tracks) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
