@@ -30,17 +30,6 @@ const BASE_HEADERS = {
 let globalCookie = "";
 let cookieTimestamp = 0;
 const COOKIE_EXPIRY = 54e6;
-
-// Helper function to generate random hash
-function generateRandomHash(length) {
-  const chars = '0123456789abcdef';
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
 function makeRequest(url, options = {}) {
   return fetch(url, __spreadProps(__spreadValues({}, options), {
     headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
@@ -82,20 +71,6 @@ function bypass() {
         }
       }
       return response.text().then(function(responseText) {
-        console.log(`[NetMirror] Bypass response: ${responseText.substring(0, 200)}...`);
-        
-        // Try to parse the JSON response
-        try {
-          const responseData = JSON.parse(responseText);
-          if (responseData.hash) {
-            console.log(`[NetMirror] Got hash from response: ${responseData.hash.substring(0, 30)}...`);
-            // Store the hash for use in URLs
-            global.hashToken = responseData.hash;
-          }
-        } catch (e) {
-          // Not JSON, continue with text check
-        }
-        
         if (!responseText.includes('"r":"n"')) {
           console.log(`[NetMirror] Bypass attempt ${attempts + 1} failed, retrying...`);
           return attemptBypass(attempts + 1);
@@ -332,10 +307,6 @@ function getStreamingLinks(contentId, title, platform) {
     }
     const sources = [];
     const subtitles = [];
-    
-    // Cloudstream's user_token (static)
-    const cloudstreamToken = "a0a5f663894ade410614071fe46baca6";
-    
     playlist.forEach((item) => {
       if (item.sources) {
         item.sources.forEach((source) => {
@@ -356,71 +327,13 @@ function getStreamingLinks(contentId, title, platform) {
               fullUrl = "https://net51.cc" + fullUrl;
             }
           }
+          // ❌ Do NOTHING else to the URL
           
-          try {
-            // Parse the existing URL to extract the in= parameter parts
-            const urlObj = new URL(fullUrl);
-            const inParam = urlObj.searchParams.get('in');
-            let newInParam = '';
-            
-            if (inParam) {
-              const parts = inParam.split('::');
-              if (parts.length >= 4) {
-                // Replace first part with Cloudstream's token
-                parts[0] = cloudstreamToken;
-                // Update timestamp to current
-                parts[2] = getUnixTime().toString();
-                newInParam = parts.join('::');
-              }
-            }
-            
-            // If we couldn't parse the in parameter, create a new one like Cloudstream
-            if (!newInParam) {
-              // Generate a random hash for the second part (like Cloudstream does)
-              const randomHash = generateRandomHash(32);
-              const timestamp = getUnixTime();
-              newInParam = `${cloudstreamToken}::${randomHash}::${timestamp}::ni`;
-            }
-            
-            // Update the URL with the new in parameter
-            urlObj.searchParams.set('in', newInParam);
-            
-            // Remove any existing quality parameter
-            urlObj.searchParams.delete('q');
-            urlObj.searchParams.delete('quality');
-            
-            const baseUrl = urlObj.toString();
-            
-            // Generate quality variants like Cloudstream does
-            const qualities = [
-              { quality: "1080p", q: "1080p" },
-              { quality: "720p", q: "720p" },
-              { quality: "480p", q: "480p" },
-              { quality: "360p", q: "360p" },
-              { quality: "Auto", q: null } // No q parameter for auto
-            ];
-            
-            qualities.forEach(({ quality, q }) => {
-              const variantUrl = new URL(baseUrl);
-              if (q) {
-                variantUrl.searchParams.set('q', q);
-              }
-              
-              sources.push({
-                url: variantUrl.toString(),
-                quality: quality,
-                type: source.type || "application/x-mpegURL"
-              });
-            });
-          } catch (error) {
-            console.error(`[NetMirror] Error processing URL ${fullUrl}:`, error);
-            // Fallback: use the original URL
-            sources.push({
-              url: fullUrl,
-              quality: source.label || "HD",
-              type: source.type || "application/x-mpegURL"
-            });
-          }
+          sources.push({
+            url: fullUrl,
+            quality: source.label,
+            type: source.type || "application/x-mpegURL"
+          });
         });
       }
       if (item.tracks) {
@@ -438,18 +351,11 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
     });
-    
     console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
     
-    // Debug: Log sample URLs
-    if (sources.length > 0) {
-      const sample1080p = sources.find(s => s.quality === "1080p");
-      const sample720p = sources.find(s => s.quality === "720p");
-      const sampleAuto = sources.find(s => s.quality === "Auto");
-      
-      if (sample1080p) console.log(`[NetMirror] Sample 1080p URL: ${sample1080p.url.substring(0, 150)}...`);
-      if (sample720p) console.log(`[NetMirror] Sample 720p URL: ${sample720p.url.substring(0, 150)}...`);
-      if (sampleAuto) console.log(`[NetMirror] Sample Auto URL: ${sampleAuto.url.substring(0, 150)}...`);
+    // Debug log for PrimeVideo URLs
+    if (platform.toLowerCase() === "primevideo" && sources.length > 0) {
+      console.log(`[NetMirror] PrimeVideo sample URL: ${sources[0].url}`);
     }
     
     return { sources, subtitles };
@@ -668,9 +574,149 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 return trySearch(strategyIndex + 1);
               }
               
+              // Debug: Log all source details
+              console.log(`[NetMirror] Raw source data:`, streamData.sources.map(s => ({
+                url: s.url.substring(0, 100) + "...",
+                quality: s.quality,
+                type: s.type
+              })));
+              
               const streams = streamData.sources.map((source) => {
-                // Quality is already determined in getStreamingLinks
-                const quality = source.quality;
+                let quality = "HD";
+                const url = source.url;
+                const sourceQuality = source.quality || "";
+                
+                console.log(`[NetMirror] Processing source - URL: ${url.substring(0, 100)}..., Label: "${sourceQuality}"`);
+                
+                // 🔧 IMPROVED QUALITY DETECTION - Cloudstream approach
+                // Try multiple detection methods in order of priority
+                
+                // Method 1: Direct quality label from source
+                if (sourceQuality) {
+                  const label = sourceQuality.toLowerCase().trim();
+                  console.log(`[NetMirror] Source label: "${label}"`);
+                  
+                  // Common quality patterns in labels
+                  const qualityPatterns = [
+                    { pattern: /1080|full.?hd|fhd/i, value: "1080p" },
+                    { pattern: /720|hd|high.?def/i, value: "720p" },
+                    { pattern: /480|sd|standard.?def/i, value: "480p" },
+                    { pattern: /360|low/i, value: "360p" },
+                    { pattern: /240|very.?low/i, value: "240p" },
+                    { pattern: /(\d{3,4})[pP]/, value: (match) => match[1] + "p" }
+                  ];
+                  
+                  for (const { pattern, value } of qualityPatterns) {
+                    const match = label.match(pattern);
+                    if (match) {
+                      quality = typeof value === 'function' ? value(match) : value;
+                      console.log(`[NetMirror] Detected from label: ${quality}`);
+                      break;
+                    }
+                  }
+                }
+                
+                // Method 2: URL pattern matching (most reliable for NetMirror)
+                if (quality === "HD" || quality === "720p") {
+                  const urlLower = url.toLowerCase();
+                  
+                  // NetMirror specific patterns
+                  const urlPatterns = [
+                    // 1080p patterns
+                    { pattern: /1080|1920x1080|fullhd|fhd/, value: "1080p" },
+                    // 720p patterns  
+                    { pattern: /720|1280x720|hd/, value: "720p" },
+                    // 480p patterns
+                    { pattern: /480|854x480|sd/, value: "480p" },
+                    // 360p patterns
+                    { pattern: /360|640x360/, value: "360p" },
+                    // 240p patterns
+                    { pattern: /240|426x240/, value: "240p" }
+                  ];
+                  
+                  for (const { pattern, value } of urlPatterns) {
+                    if (pattern.test(urlLower)) {
+                      // Additional check to avoid false positives
+                      if (value === "1080p" && !urlLower.includes("720") && !urlLower.includes("480") && !urlLower.includes("360")) {
+                        quality = value;
+                        console.log(`[NetMirror] Detected from URL pattern: ${quality}`);
+                        break;
+                      } else if (value !== "1080p") {
+                        quality = value;
+                        console.log(`[NetMirror] Detected from URL pattern: ${quality}`);
+                        break;
+                      }
+                    }
+                  }
+                }
+                
+                // Method 3: Query parameter detection
+                if (quality === "HD" || quality === "720p") {
+                  const urlParams = new URLSearchParams(url.split('?')[1] || '');
+                  const qParam = urlParams.get('q') || urlParams.get('quality') || urlParams.get('res');
+                  if (qParam) {
+                    const qMatch = qParam.match(/(\d{3,4})[pP]?/);
+                    if (qMatch) {
+                      const num = qMatch[1];
+                      if (num === '1080') quality = "1080p";
+                      else if (num === '720') quality = "720p";
+                      else if (num === '480') quality = "480p";
+                      else if (num === '360') quality = "360p";
+                      else if (num === '240') quality = "240p";
+                      console.log(`[NetMirror] Detected from query param: ${quality}`);
+                    }
+                  }
+                }
+                
+                // Method 4: File name analysis
+                if (quality === "HD" || quality === "720p") {
+                  const fileName = url.split('/').pop().split('?')[0].toLowerCase();
+                  const qualityInName = fileName.match(/(\d{3,4})[pP]/);
+                  if (qualityInName) {
+                    const num = qualityInName[1];
+                    if (num === '1080') quality = "1080p";
+                    else if (num === '720') quality = "720p";
+                    else if (num === '480') quality = "480p";
+                    else if (num === '360') quality = "360p";
+                    console.log(`[NetMirror] Detected from filename: ${quality}`);
+                  }
+                }
+                
+                // Method 5: Check for specific NetMirror patterns
+                if (quality === "HD" || quality === "720p") {
+                  // NetMirror often uses patterns like: /hls/1080/ or /hls/720/
+                  if (url.includes('/hls/1080/') || url.includes('/1080/hls/')) {
+                    quality = "1080p";
+                    console.log(`[NetMirror] Detected from hls path: ${quality}`);
+                  } else if (url.includes('/hls/720/') || url.includes('/720/hls/')) {
+                    quality = "720p";
+                    console.log(`[NetMirror] Detected from hls path: ${quality}`);
+                  }
+                }
+                
+                // Method 6: Default based on platform
+                if (quality === "HD") {
+                  // If we still have HD, check if URL looks like it might be 1080p
+                  const urlLower = url.toLowerCase();
+                  const hasHighQualityIndicators = urlLower.includes('high') || 
+                                                   urlLower.includes('best') || 
+                                                   urlLower.includes('quality') ||
+                                                   url.includes('1080');
+                  
+                  const hasLowQualityIndicators = urlLower.includes('low') || 
+                                                  urlLower.includes('mobile') ||
+                                                  urlLower.includes('360');
+                  
+                  if (hasHighQualityIndicators && !hasLowQualityIndicators) {
+                    quality = "1080p";
+                    console.log(`[NetMirror] Defaulted to 1080p based on URL indicators`);
+                  } else {
+                    quality = "720p";
+                    console.log(`[NetMirror] Defaulted to 720p`);
+                  }
+                }
+                
+                console.log(`[NetMirror] Final quality: ${quality} for URL`);
                 
                 let streamTitle = `${title} ${year ? `(${year})` : ""} ${quality}`;
                 if (mediaType === "tv") {
