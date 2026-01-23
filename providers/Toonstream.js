@@ -1,4 +1,344 @@
-// Enhanced getStreams function for PrimeVideo with Cinemeta fix
+// PrimeVideo Mirror Provider
+console.log("[NetMirror] Initializing PrimeVideo provider");
+
+const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const NETMIRROR_BASE = "https://net51.cc/";
+const BASE_HEADERS = {
+  "X-Requested-With": "XMLHttpRequest",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.5",
+  "Connection": "keep-alive"
+};
+
+let globalCookie = "";
+let cookieTimestamp = 0;
+const COOKIE_EXPIRY = 54e6;
+const PLATFORM = "primevideo";
+const OTT = "pv"; // PrimeVideo OTT code
+
+// Utility functions
+var __defProp = Object.defineProperty;
+var __defProps = Object.defineProperties;
+var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
+var __getOwnPropSymbols = Object.getOwnPropertySymbols;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __propIsEnum = Object.prototype.propertyIsEnumerable;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __spreadValues = (a, b) => {
+  for (var prop in b || (b = {}))
+    if (__hasOwnProp.call(b, prop))
+      __defNormalProp(a, prop, b[prop]);
+  if (__getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(b)) {
+      if (__propIsEnum.call(b, prop))
+        __defNormalProp(a, prop, b[prop]);
+    }
+  return a;
+};
+var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
+
+function makeRequest(url, options = {}) {
+  return fetch(url, __spreadProps(__spreadValues({}, options), {
+    headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
+    timeout: 1e4
+  })).then(function(response) {
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    return response;
+  });
+}
+
+function getUnixTime() {
+  return Math.floor(Date.now() / 1e3);
+}
+
+// PrimeVideo-specific bypass
+function bypass() {
+  const now = Date.now();
+  if (globalCookie && cookieTimestamp && now - cookieTimestamp < COOKIE_EXPIRY) {
+    console.log("[NetMirror-PrimeVideo] Using cached authentication cookie");
+    return Promise.resolve(globalCookie);
+  }
+  console.log("[NetMirror-PrimeVideo] Bypassing authentication...");
+  
+  function attemptBypass(attempts) {
+    if (attempts >= 5) {
+      throw new Error("Max bypass attempts reached");
+    }
+    return makeRequest(`${NETMIRROR_BASE}tv/p.php`, {
+      method: "POST",
+      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        "Referer": `${NETMIRROR_BASE}tv/home`
+      })
+    }).then(function(response) {
+      const setCookieHeader = response.headers.get("set-cookie");
+      let extractedCookie = null;
+      if (setCookieHeader && (typeof setCookieHeader === "string" || Array.isArray(setCookieHeader))) {
+        const cookieString = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
+        const cookieMatch = cookieString.match(/t_hash_t=([^;]+)/);
+        if (cookieMatch) {
+          extractedCookie = cookieMatch[1];
+        }
+      }
+      return response.text().then(function(responseText) {
+        if (!responseText.includes('"r":"n"')) {
+          console.log(`[NetMirror-PrimeVideo] Bypass attempt ${attempts + 1} failed, retrying...`);
+          return attemptBypass(attempts + 1);
+        }
+        if (extractedCookie) {
+          globalCookie = extractedCookie;
+          cookieTimestamp = Date.now();
+          console.log("[NetMirror-PrimeVideo] Authentication successful");
+          return globalCookie;
+        }
+        throw new Error("Failed to extract authentication cookie");
+      });
+    });
+  }
+  return attemptBypass(0);
+}
+
+// PrimeVideo-specific search
+function searchContent(query) {
+  console.log(`[NetMirror-PrimeVideo] Searching for "${query}"...`);
+  return bypass().then(function(cookie) {
+    const cookies = {
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6", // PrimeVideo token
+      "ott": OTT,
+      "hd": "on"
+    };
+    const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
+    
+    return makeRequest(
+      `${NETMIRROR_BASE}pv/search.php?s=${encodeURIComponent(query)}&t=${getUnixTime()}`,
+      {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          "Cookie": cookieString,
+          "Referer": `${NETMIRROR_BASE}tv/home`
+        })
+      }
+    );
+  }).then(function(response) {
+    return response.json();
+  }).then(function(searchData) {
+    if (searchData.searchResult && searchData.searchResult.length > 0) {
+      console.log(`[NetMirror-PrimeVideo] Found ${searchData.searchResult.length} results`);
+      return searchData.searchResult.map((item) => ({
+        id: item.id,
+        title: item.t,
+        platform: PLATFORM,
+        posterUrl: `https://imgcdn.media/pv/v/${item.id}.jpg`
+      }));
+    } else {
+      console.log("[NetMirror-PrimeVideo] No results found");
+      return [];
+    }
+  });
+}
+
+// PrimeVideo-specific episode loading
+function getEpisodesFromSeason(seriesId, seasonId, page = 1) {
+  console.log(`[NetMirror-PrimeVideo] Loading episodes for season ${seasonId}, page ${page}`);
+  return bypass().then(function(cookie) {
+    const cookies = {
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "ott": OTT,
+      "hd": "on"
+    };
+    const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
+    
+    return makeRequest(
+      `${NETMIRROR_BASE}pv/episodes.php?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${page}`,
+      {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          "Cookie": cookieString,
+          "Referer": `${NETMIRROR_BASE}tv/home`
+        })
+      }
+    );
+  }).then(function(response) {
+    return response.json();
+  }).then(function(episodeData) {
+    const episodes = episodeData.episodes || [];
+    
+    // Check if there are more pages
+    if (episodeData.nextPageShow === 1) {
+      return getEpisodesFromSeason(seriesId, seasonId, page + 1).then(function(nextPageEpisodes) {
+        return episodes.concat(nextPageEpisodes);
+      });
+    }
+    
+    return episodes;
+  }).catch(function(error) {
+    console.log(`[NetMirror-PrimeVideo] Failed to load episodes from season ${seasonId}, page ${page}`);
+    return [];
+  });
+}
+
+// Enhanced loadContent function for PrimeVideo
+function loadContent(contentId) {
+  console.log(`[NetMirror-PrimeVideo] Loading content details for ID: ${contentId}`);
+  return bypass().then(function(cookie) {
+    const cookies = {
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "ott": OTT,
+      "hd": "on"
+    };
+    const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
+    
+    return makeRequest(
+      `${NETMIRROR_BASE}pv/post.php?id=${contentId}&t=${getUnixTime()}`,
+      {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          "Cookie": cookieString,
+          "Referer": `${NETMIRROR_BASE}tv/home`
+        })
+      }
+    );
+  }).then(function(response) {
+    return response.json();
+  }).then(function(postData) {
+    console.log(`[NetMirror-PrimeVideo] Loaded: ${postData.title}`);
+    
+    let allEpisodes = postData.episodes || [];
+    const isMovie = !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null;
+    
+    if (!isMovie && postData.episodes && postData.episodes.length > 0 && postData.episodes[0] !== null) {
+      console.log("[NetMirror-PrimeVideo] Loading episodes from all seasons...");
+      
+      let episodePromise = Promise.resolve();
+      
+      // Load next page episodes if available
+      if (postData.nextPageShow === 1 && postData.nextPageSeason) {
+        episodePromise = episodePromise.then(function() {
+          return getEpisodesFromSeason(contentId, postData.nextPageSeason, 2);
+        }).then(function(additionalEpisodes) {
+          allEpisodes = allEpisodes.concat(additionalEpisodes);
+        });
+      }
+      
+      // Load episodes from other seasons
+      if (postData.season && postData.season.length > 1) {
+        const otherSeasons = postData.season.slice(0, -1);
+        otherSeasons.forEach(function(season) {
+          episodePromise = episodePromise.then(function() {
+            return getEpisodesFromSeason(contentId, season.id, 1);
+          }).then(function(seasonEpisodes) {
+            allEpisodes = allEpisodes.concat(seasonEpisodes);
+          });
+        });
+      }
+      
+      return episodePromise.then(function() {
+        console.log(`[NetMirror-PrimeVideo] Loaded ${allEpisodes.filter((ep) => ep !== null).length} total episodes`);
+        return {
+          id: contentId,
+          title: postData.title,
+          description: postData.desc,
+          year: postData.year,
+          episodes: allEpisodes.filter(ep => ep !== null),
+          seasons: postData.season || [],
+          isMovie: false,
+          platform: PLATFORM
+        };
+      });
+    }
+    
+    return {
+      id: contentId,
+      title: postData.title,
+      description: postData.desc,
+      year: postData.year,
+      episodes: allEpisodes.filter(ep => ep !== null),
+      seasons: postData.season || [],
+      isMovie: isMovie,
+      platform: PLATFORM
+    };
+  });
+}
+
+// PrimeVideo-specific streaming links
+function getStreamingLinks(contentId, title) {
+  console.log(`[NetMirror-PrimeVideo] Getting streaming links for: ${title}`);
+  return bypass().then(function(cookie) {
+    const cookies = {
+      "t_hash_t": cookie,
+      "user_token": "a0a5f663894ade410614071fe46baca6",
+      "hd": "on",
+      "ott": OTT
+    };
+    const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
+    
+    return makeRequest(
+      `${NETMIRROR_BASE}tv/pv/playlist.php?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
+      {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          "Cookie": cookieString,
+          "Referer": `${NETMIRROR_BASE}tv/home`
+        })
+      }
+    );
+  }).then(function(response) {
+    return response.json();
+  }).then(function(playlist) {
+    if (!Array.isArray(playlist) || playlist.length === 0) {
+      console.log("[NetMirror-PrimeVideo] No streaming links found");
+      return { sources: [], subtitles: [] };
+    }
+    
+    const sources = [];
+    const subtitles = [];
+    
+    playlist.forEach((item) => {
+      if (item.sources) {
+        item.sources.forEach((source) => {
+          let fullUrl = source.file;
+          
+          // PrimeVideo URLs should NOT be modified (Cloudstream behavior)
+          // Only fix relative URLs
+          if (!fullUrl.startsWith("http")) {
+            if (fullUrl.startsWith("//")) {
+              fullUrl = "https:" + fullUrl;
+            } else if (fullUrl.startsWith("/")) {
+              fullUrl = NETMIRROR_BASE + fullUrl.substring(1);
+            }
+          }
+          
+          sources.push({
+            url: fullUrl,
+            quality: source.label,
+            type: source.type || "application/x-mpegURL"
+          });
+        });
+      }
+      
+      if (item.tracks) {
+        item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
+          let fullSubUrl = track.file;
+          if (track.file.startsWith("/") && !track.file.startsWith("//")) {
+            fullSubUrl = NETMIRROR_BASE + track.file;
+          } else if (track.file.startsWith("//")) {
+            fullSubUrl = "https:" + track.file;
+          }
+          subtitles.push({
+            url: fullSubUrl,
+            language: track.label
+          });
+        });
+      }
+    });
+    
+    console.log(`[NetMirror-PrimeVideo] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
+    return { sources, subtitles };
+  });
+}
+
+// Enhanced getStreams function for PrimeVideo with Cinemeta fixes
 function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null) {
   console.log(`[NetMirror-PrimeVideo] Fetching streams for TMDB ID: ${tmdbId}, Type: ${mediaType}${seasonNum ? `, S${seasonNum}E${episodeNum}` : ""}`);
   
@@ -122,6 +462,42 @@ function getSpecialHandling(title, tmdbId) {
         "Reacher",
         "Jack Reacher",
         "Reacher Season"
+      ],
+      isTV: true,
+      year: "2022"
+    },
+    "good omens": {
+      searchTerms: [
+        "Good Omens",
+        "Good Omens Season",
+        "Good Omens Amazon"
+      ],
+      isTV: true,
+      year: "2019"
+    },
+    "the terminal list": {
+      searchTerms: [
+        "The Terminal List",
+        "Terminal List",
+        "Terminal List Season"
+      ],
+      isTV: true,
+      year: "2022"
+    },
+    "the wheel of time": {
+      searchTerms: [
+        "The Wheel of Time",
+        "Wheel of Time",
+        "Wheel of Time Season"
+      ],
+      isTV: true,
+      year: "2021"
+    },
+    "the lord of the rings: the rings of power": {
+      searchTerms: [
+        "The Lord of the Rings: The Rings of Power",
+        "Rings of Power",
+        "Lord of the Rings Rings of Power"
       ],
       isTV: true,
       year: "2022"
@@ -319,7 +695,11 @@ function estimateYearFromTitle(title) {
     "the marvelous mrs. maisel": "2017",
     "upload": "2020",
     "invincible": "2021",
-    "reacher": "2022"
+    "reacher": "2022",
+    "good omens": "2019",
+    "the terminal list": "2022",
+    "the wheel of time": "2021",
+    "the lord of the rings: the rings of power": "2022"
   };
   
   const titleLower = title.toLowerCase();
@@ -401,7 +781,28 @@ function processContentForStreaming(contentData, title, mediaType, seasonNum, ep
   });
 }
 
-// Update getSearchStrategies to include original title
+// Helper: Try multiple search strategies
+function trySearchStrategies(strategies, index) {
+  if (index >= strategies.length) {
+    return Promise.resolve([]);
+  }
+  
+  const searchQuery = strategies[index];
+  console.log(`[NetMirror-PrimeVideo] Search strategy ${index + 1}/${strategies.length}: "${searchQuery}"`);
+  
+  return searchContent(searchQuery).then(function(searchResults) {
+    if (searchResults.length === 0) {
+      console.log(`[NetMirror-PrimeVideo] No results, trying next strategy...`);
+      return trySearchStrategies(strategies, index + 1);
+    }
+    return searchResults;
+  }).catch(function(error) {
+    console.log(`[NetMirror-PrimeVideo] Error with search strategy "${searchQuery}": ${error.message}`);
+    return trySearchStrategies(strategies, index + 1);
+  });
+}
+
+// Helper: Get search strategies based on content type
 function getSearchStrategies(title, year, mediaType, originalTitle) {
   const strategies = [];
   
@@ -446,7 +847,7 @@ function getSearchStrategies(title, year, mediaType, originalTitle) {
   return strategies;
 }
 
-// Update findMostRelevantResult to consider year
+// Helper: Find the most relevant search result
 function findMostRelevantResult(results, query, mediaType, year) {
   if (results.length === 1) return results[0];
   
@@ -514,4 +915,150 @@ function findMostRelevantResult(results, query, mediaType, year) {
   });
   
   return scoredResults[0].result;
+}
+
+// Helper function to find episode by season and episode number
+function findEpisode(episodes, season, episode) {
+  return episodes.find((ep) => {
+    let epSeason, epNumber;
+    
+    if (ep.s && ep.ep) {
+      epSeason = parseInt(ep.s.replace("S", ""));
+      epNumber = parseInt(ep.ep.replace("E", ""));
+    } else if (ep.season && ep.episode) {
+      epSeason = parseInt(ep.season);
+      epNumber = parseInt(ep.episode);
+    } else if (ep.season_number && ep.episode_number) {
+      epSeason = parseInt(ep.season_number);
+      epNumber = parseInt(ep.episode_number);
+    } else {
+      return false;
+    }
+    
+    return epSeason === season && epNumber === episode;
+  });
+}
+
+// Helper function to find first episode of a season
+function findFirstEpisode(episodes, season) {
+  const seasonEpisodes = episodes.filter(ep => {
+    let epSeason;
+    
+    if (ep.s) {
+      epSeason = parseInt(ep.s.replace("S", ""));
+    } else if (ep.season) {
+      epSeason = parseInt(ep.season);
+    } else if (ep.season_number) {
+      epSeason = parseInt(ep.season_number);
+    } else {
+      return false;
+    }
+    
+    return epSeason === season;
+  });
+  
+  if (seasonEpisodes.length === 0) return null;
+  
+  // Find episode with lowest episode number
+  return seasonEpisodes.reduce((first, current) => {
+    let currentNum, firstNum;
+    
+    if (current.ep) {
+      currentNum = parseInt(current.ep.replace("E", ""));
+    } else if (current.episode) {
+      currentNum = parseInt(current.episode);
+    } else if (current.episode_number) {
+      currentNum = parseInt(current.episode_number);
+    } else {
+      return first;
+    }
+    
+    if (!first) return current;
+    
+    if (first.ep) {
+      firstNum = parseInt(first.ep.replace("E", ""));
+    } else if (first.episode) {
+      firstNum = parseInt(first.episode);
+    } else if (first.episode_number) {
+      firstNum = parseInt(first.episode_number);
+    }
+    
+    return currentNum < firstNum ? current : first;
+  }, null);
+}
+
+// Helper function to extract quality from source
+function extractQuality(source) {
+  let quality = "HD";
+  
+  const urlQualityMatch = source.url.match(/[?&]q=(\d+p)/i);
+  if (urlQualityMatch) {
+    quality = urlQualityMatch[1];
+  } else if (source.quality) {
+    const labelQualityMatch = source.quality.match(/(\d+p)/i);
+    if (labelQualityMatch) {
+      quality = labelQualityMatch[1];
+    } else {
+      const normalizedQuality = source.quality.toLowerCase();
+      if (normalizedQuality.includes("full hd") || normalizedQuality.includes("1080")) {
+        quality = "1080p";
+      } else if (normalizedQuality.includes("hd") || normalizedQuality.includes("720")) {
+        quality = "720p";
+      } else if (normalizedQuality.includes("480")) {
+        quality = "480p";
+      } else if (normalizedQuality.includes("360")) {
+        quality = "360p";
+      } else if (normalizedQuality.includes("240")) {
+        quality = "240p";
+      }
+    }
+  } else if (source.url.includes("1080p")) {
+    quality = "1080p";
+  } else if (source.url.includes("720p")) {
+    quality = "720p";
+  } else if (source.url.includes("480p")) {
+    quality = "480p";
+  }
+  
+  return quality;
+}
+
+// Helper function to sort streams by quality
+function sortByQuality(a, b) {
+  // "auto" quality goes first
+  if (a.quality.toLowerCase() === "auto" && b.quality.toLowerCase() !== "auto") return -1;
+  if (b.quality.toLowerCase() === "auto" && a.quality.toLowerCase() !== "auto") return 1;
+  
+  // Parse quality numbers
+  const parseQuality = (quality) => {
+    const match = quality.match(/(\d{3,4})p/i);
+    return match ? parseInt(match[1], 10) : 0;
+  };
+  
+  const qualityA = parseQuality(a.quality);
+  const qualityB = parseQuality(b.quality);
+  
+  // Higher quality first
+  return qualityB - qualityA;
+}
+
+// Export PrimeVideo-specific functions
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { 
+    getStreams,
+    searchContent,
+    loadContent,
+    getStreamingLinks,
+    getEpisodesFromSeason,
+    platform: PLATFORM
+  };
+} else {
+  window.NetMirrorPrimeVideo = { 
+    getStreams,
+    searchContent,
+    loadContent,
+    getStreamingLinks,
+    getEpisodesFromSeason,
+    platform: PLATFORM
+  };
 }
