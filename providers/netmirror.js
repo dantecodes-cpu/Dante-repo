@@ -311,6 +311,12 @@ function getStreamingLinks(contentId, title, platform) {
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
+
+          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
+if (platform.toLowerCase() === "netflix") {
+  // only touch the PATH part, never query
+  fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/");
+}
           
           // ✅ ONLY fix RELATIVE URLs
           if (!fullUrl.startsWith("http")) {
