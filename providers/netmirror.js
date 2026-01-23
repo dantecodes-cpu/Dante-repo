@@ -320,62 +320,20 @@ function getStreamingLinks(contentId, title, platform) {
           }
           
           // ✅ ONLY fix RELATIVE URLs
-if (!fullUrl.startsWith("http")) {
-
-  // 🔵 Disney — keep net51.cc//
-  if (platform.toLowerCase() === "disney") {
-    if (fullUrl.startsWith("//")) {
-      fullUrl = "https://net51.cc" + fullUrl; // preserves //
-    } else if (fullUrl.startsWith("/")) {
-      fullUrl = "https://net51.cc/" + fullUrl; // results in //
-    }
-  }
-
-  // 🟢 Netflix / Prime — normal behavior
-  else {
-    if (fullUrl.startsWith("//")) {
-      fullUrl = "https:" + fullUrl;
-    } else {
-      fullUrl = "https://net51.cc" + fullUrl;
-    }
-  }
-}
+          if (!fullUrl.startsWith("http")) {
+            if (fullUrl.startsWith("//")) {
+              fullUrl = "https:" + fullUrl;
+            } else {
+              fullUrl = "https://net51.cc" + fullUrl;
+            }
+          }
+          // ❌ Do NOTHING else to the URL
           
-          // ================================
-// 🎯 Disney (Hotstar) — Cloudstream exact behavior
-// ================================
-if (platform.toLowerCase() === "disney") {
-  const baseUrl = fullUrl;
-
-  // 1️⃣ Auto (no quality param)
-  sources.push({
-    url: baseUrl,
-    quality: "Auto",
-    type: "application/x-mpegURL"
-  });
-
-  // 2️⃣ Explicit qualities (forced)
-  const qualities = ["1080p", "720p", "480p"];
-
-  qualities.forEach((q) => {
-    let qUrl = baseUrl;
-
-    // If q already exists, replace it
-    if (/[?&]q=/.test(qUrl)) {
-      qUrl = qUrl.replace(/([?&]q=)[^&]+/, `$1${q}`);
-    } else {
-      qUrl += (qUrl.includes("?") ? "&" : "?") + `q=${q}`;
-    }
-
-    sources.push({
-      url: qUrl,
-      quality: q,
-      type: "application/x-mpegURL"
-    });
-  });
-
-  return; // ⛔ do NOT fall through to default logic
-}
+          sources.push({
+            url: fullUrl,
+            quality: source.label,
+            type: source.type || "application/x-mpegURL"
+          });
         });
       }
       if (item.tracks) {
@@ -472,20 +430,86 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       ];
     }
     
+    // DETERMINE PLATFORM PRIORITY BASED ON CONTENT
     let platforms = ["netflix", "primevideo", "disney"];
-    if (title.toLowerCase().includes("boys") || title.toLowerCase().includes("prime")) {
+    
+    // Check for platform-specific content
+    const lowerTitle = title.toLowerCase();
+    
+    // PrimeVideo exclusives
+    const primevideoExclusives = [
+      "the boys", "jack ryan", "invincible", "reacher", "the terminal list",
+      "the marvelous mrs. maisel", "fleabag", "good omens", "the wheel of time",
+      "the lord of the rings", "outer range", "citadel", "tom clancy", "upload"
+    ];
+    
+    // Disney+ exclusives
+    const disneyExclusives = [
+      "mandalorian", "star wars", "marvel", "loki", "wandavision", "falcon",
+      "hawkeye", "moon knight", "ms. marvel", "she-hulk", "obi-wan", "andor",
+      "ahsoka", "book of boba fett", "what if", "national geographic"
+    ];
+    
+    // Netflix exclusives
+    const netflixExclusives = [
+      "stranger things", "the crown", "bridgerton", "queen's gambit",
+      "squid game", "money heist", "the witcher", "dark", "ozark",
+      "narcos", "house of cards", "orange is the new black"
+    ];
+    
+    // Determine platform priority based on content
+    let isPrimevideoContent = primevideoExclusives.some(keyword => lowerTitle.includes(keyword));
+    let isDisneyContent = disneyExclusives.some(keyword => lowerTitle.includes(keyword));
+    let isNetflixContent = netflixExclusives.some(keyword => lowerTitle.includes(keyword));
+    
+    if (isPrimevideoContent) {
       platforms = ["primevideo", "netflix", "disney"];
+      console.log(`[NetMirror] Detected PrimeVideo exclusive content: "${title}"`);
+    } else if (isDisneyContent) {
+      platforms = ["disney", "netflix", "primevideo"];
+      console.log(`[NetMirror] Detected Disney+ exclusive content: "${title}"`);
+    } else if (isNetflixContent) {
+      platforms = ["netflix", "primevideo", "disney"];
+      console.log(`[NetMirror] Detected Netflix exclusive content: "${title}"`);
+    } else if (lowerTitle.includes("boys") || lowerTitle.includes("prime")) {
+      // Specific fix for "The Boys" - PrimeVideo exclusive
+      platforms = ["primevideo", "netflix", "disney"];
+      console.log(`[NetMirror] Prioritizing PrimeVideo for "${title}"`);
     }
     
+    console.log(`[NetMirror] Platform search order: ${platforms.join(", ")}`);
     console.log(`[NetMirror] Will try ${searchStrategies.length} search strategies`);
     
-    // Improved similarity calculation - simpler but effective
-    function calculateSimilarity(str1, str2) {
+    // Improved similarity calculation - stricter for TV shows
+    function calculateSimilarity(str1, str2, isTVSearch = false) {
       const s1 = str1.toLowerCase().trim();
       const s2 = str2.toLowerCase().trim();
       
       // Exact match is best
       if (s1 === s2) return 1;
+      
+      // Check for platform mismatches in title
+      const platformIndicators = {
+        "disney": ["disney", "marvel", "star wars", "national geographic"],
+        "netflix": ["netflix"],
+        "primevideo": ["prime", "amazon"]
+      };
+      
+      // If searching for specific platform content, penalize titles from wrong platforms
+      if (isTVSearch) {
+        for (const [platform, indicators] of Object.entries(platformIndicators)) {
+          if (indicators.some(indicator => s2.includes(indicator))) {
+            // If we're searching for PrimeVideo content but title mentions Disney, penalize
+            if (isPrimevideoContent && platform === "disney") {
+              return 0.1; // Very low score
+            }
+            // If we're searching for Disney content but title mentions PrimeVideo, penalize
+            if (isDisneyContent && platform === "primevideo") {
+              return 0.1; // Very low score
+            }
+          }
+        }
+      }
       
       // Word-based matching
       const words1 = s1.split(/[\s\-.,:;()]+/).filter((w) => w.length > 0);
@@ -499,18 +523,36 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       }
       
       // Calculate match percentage
-      return exactMatches / Math.max(words1.length, words2.length);
+      const matchPercentage = exactMatches / Math.max(words1.length, words2.length);
+      
+      // Boost score for exact title match (ignoring year)
+      const baseTitle1 = s1.replace(/\s*\(\d{4}\)/, "").trim();
+      const baseTitle2 = s2.replace(/\s*\(\d{4}\)/, "").trim();
+      if (baseTitle1 === baseTitle2) {
+        return 0.9; // Very high score for same title (different year)
+      }
+      
+      return matchPercentage;
     }
     
-    function filterRelevantResults(searchResults, query) {
+    function filterRelevantResults(searchResults, query, isTVSearch = false) {
       const filtered = searchResults.filter((result) => {
-        const similarity = calculateSimilarity(result.title, query);
-        return similarity >= 0.4; // Lower threshold to catch more results
+        const similarity = calculateSimilarity(result.title, query, isTVSearch);
+        return similarity >= 0.5; // Higher threshold for TV shows
       });
       
       return filtered.sort((a, b) => {
-        const simA = calculateSimilarity(a.title, query);
-        const simB = calculateSimilarity(b.title, query);
+        const simA = calculateSimilarity(a.title, query, isTVSearch);
+        const simB = calculateSimilarity(b.title, query, isTVSearch);
+        
+        // If scores are equal, prefer results without platform names in title
+        if (Math.abs(simA - simB) < 0.05) {
+          const hasPlatformNameA = /(disney|netflix|prime|amazon)/i.test(a.title);
+          const hasPlatformNameB = /(disney|netflix|prime|amazon)/i.test(b.title);
+          if (!hasPlatformNameA && hasPlatformNameB) return -1;
+          if (hasPlatformNameA && !hasPlatformNameB) return 1;
+        }
+        
         return simB - simA;
       });
     }
@@ -538,32 +580,45 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
             return trySearch(strategyIndex + 1);
           }
           
-          const relevantResults = filterRelevantResults(searchResults, title);
+          const relevantResults = filterRelevantResults(searchResults, title, mediaType === "tv");
           if (relevantResults.length === 0) {
             console.log(`[NetMirror] Found ${searchResults.length} results but none were relevant enough, trying next strategy...`);
             return trySearch(strategyIndex + 1);
           }
           
-          // For TV shows, try to filter out movies
+          // For TV shows, try to filter out movies AND wrong platform content
           let filteredResults = relevantResults;
           if (mediaType === "tv") {
             filteredResults = relevantResults.filter(result => {
-              const lowerTitle = result.title.toLowerCase();
+              const lowerResultTitle = result.title.toLowerCase();
+              
               // Skip results that look like movies
               const movieIndicators = ["(202", "(201", "(200", "(199", "(198"];
-              if (movieIndicators.some(indicator => lowerTitle.includes(indicator))) {
+              if (movieIndicators.some(indicator => lowerResultTitle.includes(indicator))) {
                 // Check if it's actually a TV series by looking for season indicators
-                const seasonIndicators = ["season", "s01", "s1", "s02", "s2", "series"];
-                if (!seasonIndicators.some(indicator => lowerTitle.includes(indicator))) {
+                const seasonIndicators = ["season", "s01", "s1", "s02", "s2", "series", "episode"];
+                if (!seasonIndicators.some(indicator => lowerResultTitle.includes(indicator))) {
                   console.log(`[NetMirror] Skipping movie result: ${result.title}`);
                   return false;
                 }
               }
+              
+              // Skip results from wrong platforms (e.g., Disney content when searching for PrimeVideo)
+              if (isPrimevideoContent && lowerResultTitle.includes("disney")) {
+                console.log(`[NetMirror] Skipping Disney content when searching for PrimeVideo: ${result.title}`);
+                return false;
+              }
+              
+              if (isDisneyContent && (lowerResultTitle.includes("prime") || lowerResultTitle.includes("amazon"))) {
+                console.log(`[NetMirror] Skipping PrimeVideo content when searching for Disney: ${result.title}`);
+                return false;
+              }
+              
               return true;
             });
             
             if (filteredResults.length === 0) {
-              console.log(`[NetMirror] All results filtered out as movies, trying next strategy...`);
+              console.log(`[NetMirror] All results filtered out, trying next strategy...`);
               return trySearch(strategyIndex + 1);
             }
           }
