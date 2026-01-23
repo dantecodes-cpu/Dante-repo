@@ -307,19 +307,23 @@ function getStreamingLinks(contentId, title, platform) {
     }
     const sources = [];
     const subtitles = [];
+    
+    // Cloudstream's static user token
+    const cloudstreamToken = "a0a5f663894ade410614071fe46baca6";
+    
     playlist.forEach((item) => {
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
           
-          // ðŸ”§ Netflix path fix: remove `/tv/` ONLY for Netflix
+          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
           if (platform.toLowerCase() === "netflix") {
             fullUrl = fullUrl
               .replace("://net51.cc/tv/", "://net51.cc/")
               .replace(/^\/tv\//, "/");
           }
           
-          // âœ… ONLY fix RELATIVE URLs
+          // ✅ ONLY fix RELATIVE URLs
           if (!fullUrl.startsWith("http")) {
             if (fullUrl.startsWith("//")) {
               fullUrl = "https:" + fullUrl;
@@ -327,12 +331,62 @@ function getStreamingLinks(contentId, title, platform) {
               fullUrl = "https://net51.cc" + fullUrl;
             }
           }
-          // âŒ Do NOTHING else to the URL
           
-          sources.push({
-            url: fullUrl,
-            quality: source.label,
-            type: source.type || "application/x-mpegURL"
+          // Create quality variants like Cloudstream does
+          const qualities = ["1080p", "720p", "480p", "360p", "Auto"];
+          
+          qualities.forEach(quality => {
+            let variantUrl = fullUrl;
+            
+            // For Auto quality, keep original URL (no q parameter)
+            if (quality !== "Auto") {
+              // Parse URL to add or replace q parameter
+              const urlParts = variantUrl.split('?');
+              const basePath = urlParts[0];
+              const queryString = urlParts[1] || '';
+              
+              // Parse query parameters
+              const params = new URLSearchParams(queryString);
+              
+              // Remove existing q/quality parameters
+              params.delete('q');
+              params.delete('quality');
+              
+              // Add the new q parameter FIRST
+              const newParams = new URLSearchParams();
+              newParams.append('q', quality);
+              
+              // Copy all other parameters
+              for (const [key, value] of params.entries()) {
+                newParams.append(key, value);
+              }
+              
+              // Rebuild URL with q parameter first
+              variantUrl = `${basePath}?${newParams.toString()}`;
+            }
+            
+            // Ensure URL has proper in= parameter format
+            if (variantUrl.includes('in=')) {
+              // Fix the in= parameter to use Cloudstream's token
+              const inMatch = variantUrl.match(/in=([^&]+)/);
+              if (inMatch) {
+                const inParts = inMatch[1].split('::');
+                if (inParts.length >= 4) {
+                  // Replace first part with Cloudstream's token
+                  inParts[0] = cloudstreamToken;
+                  // Update timestamp
+                  inParts[2] = getUnixTime().toString();
+                  const newInParam = inParts.join('::');
+                  variantUrl = variantUrl.replace(/in=[^&]+/, `in=${newInParam}`);
+                }
+              }
+            }
+            
+            sources.push({
+              url: variantUrl,
+              quality: quality,
+              type: source.type || "application/x-mpegURL"
+            });
           });
         });
       }
@@ -351,11 +405,22 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
     });
+    
     console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
     
-    // Debug log for PrimeVideo URLs
-    if (platform.toLowerCase() === "primevideo" && sources.length > 0) {
-      console.log(`[NetMirror] PrimeVideo sample URL: ${sources[0].url}`);
+    // Debug: Show first few URLs
+    if (sources.length > 0) {
+      console.log(`[NetMirror] Sample URLs for ${platform}:`);
+      const qualitySamples = {};
+      sources.forEach(source => {
+        if (!qualitySamples[source.quality]) {
+          qualitySamples[source.quality] = source.url.substring(0, 120) + '...';
+        }
+      });
+      
+      Object.entries(qualitySamples).forEach(([quality, url]) => {
+        console.log(`  ${quality}: ${url}`);
+      });
     }
     
     return { sources, subtitles };
@@ -575,33 +640,8 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
               }
               
               const streams = streamData.sources.map((source) => {
-                let quality = "HD";
-                const urlQualityMatch = source.url.match(/[?&]q=(\d+p)/i);
-                if (urlQualityMatch) {
-                  quality = urlQualityMatch[1];
-                } else if (source.quality) {
-                  const labelQualityMatch = source.quality.match(/(\d+p)/i);
-                  if (labelQualityMatch) {
-                    quality = labelQualityMatch[1];
-                  } else {
-                    const normalizedQuality = source.quality.toLowerCase();
-                    if (normalizedQuality.includes("full hd") || normalizedQuality.includes("1080")) {
-                      quality = "1080p";
-                    } else if (normalizedQuality.includes("hd") || normalizedQuality.includes("720")) {
-                      quality = "720p";
-                    } else if (normalizedQuality.includes("480")) {
-                      quality = "480p";
-                    } else {
-                      quality = source.quality;
-                    }
-                  }
-                } else if (source.url.includes("720p")) {
-                  quality = "720p";
-                } else if (source.url.includes("480p")) {
-                  quality = "480p";
-                } else if (source.url.includes("1080p")) {
-                  quality = "1080p";
-                }
+                // Quality is already set in getStreamingLinks
+                const quality = source.quality;
                 
                 let streamTitle = `${title} ${year ? `(${year})` : ""} ${quality}`;
                 if (mediaType === "tv") {
@@ -612,7 +652,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   }
                 }
                 
-                // âœ… Correct headers - ALWAYS include Referer (Cloudstream behavior)
+                // ✅ Correct headers - ALWAYS include Referer (Cloudstream behavior)
                 const streamHeaders = {
                   "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
                   "Accept": "*/*",
@@ -629,23 +669,18 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 };
               });
               
+              // Sort by quality (1080p first, then 720p, etc.)
               streams.sort((a, b) => {
-                if (a.quality.toLowerCase() === "auto" && b.quality.toLowerCase() !== "auto") {
-                  return -1;
-                }
-                if (b.quality.toLowerCase() === "auto" && a.quality.toLowerCase() !== "auto") {
-                  return 1;
-                }
-                const parseQuality = (quality) => {
-                  const match = quality.match(/(\d{3,4})p/i);
-                  return match ? parseInt(match[1], 10) : 0;
-                };
-                const qualityA = parseQuality(a.quality);
-                const qualityB = parseQuality(b.quality);
-                return qualityB - qualityA;
+                if (a.quality === "Auto" && b.quality !== "Auto") return 1;
+                if (b.quality === "Auto" && a.quality !== "Auto") return -1;
+                
+                const qualityOrder = ["1080p", "720p", "480p", "360p", "Auto"];
+                return qualityOrder.indexOf(a.quality) - qualityOrder.indexOf(b.quality);
               });
               
               console.log(`[NetMirror] Successfully processed ${streams.length} streams from ${platform}`);
+              console.log(`[NetMirror] Available qualities: ${[...new Set(streams.map(s => s.quality))].join(', ')}`);
+              
               return streams;
             });
           });
