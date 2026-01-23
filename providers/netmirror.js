@@ -265,6 +265,8 @@ function loadContent(contentId, platform) {
     };
   });
 }
+
+
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title}`);
   const ottMap = {
@@ -301,48 +303,132 @@ function getStreamingLinks(contentId, title, platform) {
   }).then(function(response) {
     return response.json();
   }).then(function(playlist) {
+    console.log(`[NetMirror] Playlist API response:`, playlist);
+    
     if (!Array.isArray(playlist) || playlist.length === 0) {
       console.log("[NetMirror] No streaming links found");
       return { sources: [], subtitles: [] };
     }
     const sources = [];
     const subtitles = [];
+    
     playlist.forEach((item) => {
-      if (item.sources) {
+      if (item.sources && Array.isArray(item.sources)) {
         item.sources.forEach((source) => {
+          if (!source.file) {
+            console.log(`[NetMirror] Skipping source with no file:`, source);
+            return;
+          }
+          
           let fullUrl = source.file;
           
-          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
+          // Fix relative URLs
+          if (fullUrl.startsWith("//")) {
+            fullUrl = "https:" + fullUrl;
+          } else if (fullUrl.startsWith("/") && !fullUrl.startsWith("//")) {
+            fullUrl = NETMIRROR_BASE + fullUrl.substring(1);
+          }
+          
+          // Netflix path fix
           if (platform.toLowerCase() === "netflix") {
-            fullUrl = fullUrl
-              .replace("://net51.cc/tv/", "://net51.cc/")
-              .replace(/^\/tv\//, "/");
+            fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/");
           }
           
-          // ✅ ONLY fix RELATIVE URLs
-          if (!fullUrl.startsWith("http")) {
-            if (fullUrl.startsWith("//")) {
-              fullUrl = "https:" + fullUrl;
-            } else {
-              fullUrl = "https://net51.cc" + fullUrl;
-            }
-          }
-          // ❌ Do NOTHING else to the URL
+          console.log(`[NetMirror] Original URL: ${fullUrl}`);
           
+          // Create Auto quality (original URL without q parameter)
+          let autoUrl = fullUrl;
+          // Remove any existing q parameter from Auto version
+          autoUrl = autoUrl.replace(/[?&]q=[^&]*/, '');
+          autoUrl = autoUrl.replace(/[?&]quality=[^&]*/, '');
+          
+          // Clean up double ? or & symbols
+          autoUrl = autoUrl.replace(/\?&/, '?');
+          autoUrl = autoUrl.replace(/\?\?/, '?');
+          if (autoUrl.endsWith('?') || autoUrl.endsWith('&')) {
+            autoUrl = autoUrl.slice(0, -1);
+          }
+          
+          console.log(`[NetMirror] Auto URL: ${autoUrl}`);
+          
+          // Create 720p version
+          let url720p = autoUrl;
+          if (url720p.includes('?')) {
+            url720p += '&q=720p';
+          } else {
+            url720p += '?q=720p';
+          }
+          console.log(`[NetMirror] 720p URL: ${url720p}`);
+          
+          // Create 1080p version  
+          let url1080p = autoUrl;
+          if (url1080p.includes('?')) {
+            url1080p += '&q=1080p';
+          } else {
+            url1080p += '?q=1080p';
+          }
+          console.log(`[NetMirror] 1080p URL: ${url1080p}`);
+          
+          // Create 480p version
+          let url480p = autoUrl;
+          if (url480p.includes('?')) {
+            url480p += '&q=480p';
+          } else {
+            url480p += '?q=480p';
+          }
+          console.log(`[NetMirror] 480p URL: ${url480p}`);
+          
+          // Create 360p version
+          let url360p = autoUrl;
+          if (url360p.includes('?')) {
+            url360p += '&q=360p';
+          } else {
+            url360p += '?q=360p';
+          }
+          console.log(`[NetMirror] 360p URL: ${url360p}`);
+          
+          // Add all quality variants
           sources.push({
-            url: fullUrl,
-            quality: source.label,
+            url: url1080p,
+            quality: "1080p",
             type: source.type || "application/x-mpegURL"
           });
+          
+          sources.push({
+            url: url720p,
+            quality: "720p",
+            type: source.type || "application/x-mpegURL"
+          });
+          
+          sources.push({
+            url: url480p,
+            quality: "480p",
+            type: source.type || "application/x-mpegURL"
+          });
+          
+          sources.push({
+            url: url360p,
+            quality: "360p",
+            type: source.type || "application/x-mpegURL"
+          });
+          
+          sources.push({
+            url: autoUrl,
+            quality: "Auto",
+            type: source.type || "application/x-mpegURL"
+          });
+          
+          console.log(`[NetMirror] Added 5 quality variants for this source`);
         });
       }
-      if (item.tracks) {
+      
+      if (item.tracks && Array.isArray(item.tracks)) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
           let fullSubUrl = track.file;
-          if (track.file.startsWith("/") && !track.file.startsWith("//")) {
-            fullSubUrl = NETMIRROR_BASE + track.file;
-          } else if (track.file.startsWith("//")) {
-            fullSubUrl = "https:" + track.file;
+          if (fullSubUrl.startsWith("/") && !fullSubUrl.startsWith("//")) {
+            fullSubUrl = NETMIRROR_BASE + fullSubUrl;
+          } else if (fullSubUrl.startsWith("//")) {
+            fullSubUrl = "https:" + fullSubUrl;
           }
           subtitles.push({
             url: fullSubUrl,
@@ -351,16 +437,20 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
     });
-    console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
     
-    // Debug log for PrimeVideo URLs
-    if (platform.toLowerCase() === "primevideo" && sources.length > 0) {
-      console.log(`[NetMirror] PrimeVideo sample URL: ${sources[0].url}`);
-    }
+    console.log(`[NetMirror] Total sources found: ${sources.length}`);
+    console.log(`[NetMirror] Sources summary:`);
+    sources.forEach((source, index) => {
+      console.log(`  ${index + 1}. ${source.quality}: ${source.url.substring(0, 80)}...`);
+    });
     
     return { sources, subtitles };
+  }).catch(function(error) {
+    console.error(`[NetMirror] Error in getStreamingLinks:`, error);
+    return { sources: [], subtitles: [] };
   });
 }
+
 function findEpisodeId(episodes, season, episode) {
   if (!episodes || episodes.length === 0) {
     console.log("[NetMirror] No episodes found in content data");
