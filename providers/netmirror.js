@@ -679,4 +679,3 @@ module.exports = { getStreams };
 } else {
 global.getStreams = getStreams;
 }
-
