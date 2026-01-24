@@ -1,5 +1,5 @@
 // ToonStream provider for Nuvio
-// Extracts direct video streams from embed pages
+// Based on Cloudstream's ToonStream implementation
 
 const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
@@ -47,7 +47,7 @@ function fetchRequest(url, options) {
     });
 }
 
-// Parse HTML - simple DOM-like parser
+// Parse HTML using regex (no cheerio in React Native)
 function parseHTML(html) {
     return {
         // Get element by selector
@@ -56,36 +56,56 @@ function parseHTML(html) {
                 var match = html.match(/<header[^>]*entry-header[^>]*>[\s\S]*?<h1[^>]*>([^<]+)<\/h1>/i);
                 return match ? { textContent: match[1].trim() } : null;
             }
+            if (selector === 'div.description > p') {
+                var match = html.match(/<div[^>]*description[^>]*>[\s\S]*?<p[^>]*>([^<]+)<\/p>/i);
+                return match ? { textContent: match[1].trim() } : null;
+            }
+            if (selector === 'div.bghd > img') {
+                var match = html.match(/<div[^>]*bghd[^>]*>[\s\S]*?<img[^>]*src="([^"]+)"/i);
+                return match ? { getAttribute: function() { return match[1]; } } : null;
+            }
+            if (selector === '#movies-a > ul > li article') {
+                // Return first article
+                var articleMatch = html.match(/<article[^>]*>[\s\S]*?<\/article>/i);
+                if (articleMatch) {
+                    var articleHtml = articleMatch[0];
+                    return {
+                        querySelector: function(subSelector) {
+                            if (subSelector === 'header > h2') {
+                                var titleMatch = articleHtml.match(/<header[^>]*>[\s\S]*?<h2[^>]*>([^<]+)<\/h2>/i);
+                                return titleMatch ? { textContent: titleMatch[1].trim() } : null;
+                            }
+                            if (subSelector === 'a') {
+                                var linkMatch = articleHtml.match(/<a[^>]*href="([^"]+)"/i);
+                                return linkMatch ? { getAttribute: function() { return linkMatch[1]; } } : null;
+                            }
+                            if (subSelector === 'img') {
+                                var imgMatch = articleHtml.match(/<img[^>]*src="([^"]+)"/i);
+                                return imgMatch ? { getAttribute: function() { return imgMatch[1]; } } : null;
+                            }
+                            return null;
+                        }
+                    };
+                }
+                return null;
+            }
             if (selector === '#aa-options > div > iframe') {
-                var iframeRegex = /<iframe[^>]*data-src="([^"]+)"[^>]*>/gi;
-                var match;
-                var iframes = [];
-                while ((match = iframeRegex.exec(html)) !== null) {
-                    iframes.push({
+                // Return first iframe
+                var iframeMatch = html.match(/<iframe[^>]*data-src="([^"]+)"[^>]*>/i);
+                if (iframeMatch) {
+                    return {
                         getAttribute: function(attr) {
-                            if (attr === 'data-src') return match[1];
+                            if (attr === 'data-src') return iframeMatch[1];
                             return '';
                         }
-                    });
+                    };
                 }
-                return iframes.length > 0 ? iframes[0] : null;
-            }
-            if (selector === 'iframe') {
-                var iframeRegex = /<iframe[^>]*src="([^"]+)"[^>]*>/gi;
-                var match = iframeRegex.exec(html);
-                return match ? {
-                    getAttribute: function(attr) {
-                        if (attr === 'src') return match[1];
-                        return '';
-                    }
-                } : null;
+                return null;
             }
             if (selector === 'div.aa-drp.choose-season > ul > li > a') {
-                var seasonRegex = /<div[^>]*aa-drp[^>]*choose-season[^>]*>([\s\S]*?)<\/div>/i;
-                var seasonMatch = html.match(seasonRegex);
-                if (seasonMatch) {
-                    var linkRegex = /<a[^>]*data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>([^<]+)<\/a>/gi;
-                    var linkMatch = linkRegex.exec(seasonMatch[0]);
+                var seasonDivMatch = html.match(/<div[^>]*aa-drp[^>]*choose-season[^>]*>[\s\S]*?<\/div>/i);
+                if (seasonDivMatch) {
+                    var linkMatch = seasonDivMatch[0].match(/<a[^>]*data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>([^<]+)<\/a>/i);
                     if (linkMatch) {
                         return {
                             getAttribute: function(attr) {
@@ -99,26 +119,13 @@ function parseHTML(html) {
                 }
                 return null;
             }
-            if (selector === '#movies-a > ul > li article') {
-                var articleRegex = /<article[^>]*>([\s\S]*?)<\/article>/gi;
-                var articleMatch = articleRegex.exec(html);
-                if (articleMatch) {
-                    var articleHtml = articleMatch[0];
+            if (selector === 'iframe') {
+                var iframeMatch = html.match(/<iframe[^>]*src="([^"]+)"[^>]*>/i);
+                if (iframeMatch) {
                     return {
-                        querySelector: function(subSelector) {
-                            if (subSelector === 'header > h2') {
-                                var titleMatch = articleHtml.match(/<h2[^>]*>([^<]+)<\/h2>/i);
-                                return titleMatch ? { textContent: titleMatch[1].trim() } : null;
-                            }
-                            if (subSelector === 'a') {
-                                var linkMatch = articleHtml.match(/<a[^>]*href="([^"]+)"/i);
-                                return linkMatch ? { getAttribute: function(a) { return linkMatch[1]; } } : null;
-                            }
-                            if (subSelector === 'img') {
-                                var imgMatch = articleHtml.match(/<img[^>]*src="([^"]+)"/i);
-                                return imgMatch ? { getAttribute: function(a) { return imgMatch[1]; } } : null;
-                            }
-                            return null;
+                        getAttribute: function(attr) {
+                            if (attr === 'src') return iframeMatch[1];
+                            return '';
                         }
                     };
                 }
@@ -129,48 +136,66 @@ function parseHTML(html) {
         // Get all elements by selector
         querySelectorAll: function(selector) {
             var elem = this.querySelector(selector);
-            if (Array.isArray(elem)) return elem;
-            if (elem && selector === '#aa-options > div > iframe') {
-                // Return all iframes
-                var iframeRegex = /<iframe[^>]*data-src="([^"]+)"[^>]*>/gi;
-                var matches = [];
-                var match;
-                while ((match = iframeRegex.exec(html)) !== null) {
-                    matches.push({
-                        getAttribute: function(attr) {
-                            if (attr === 'data-src') return match[1];
-                            return '';
-                        }
-                    });
-                }
-                return matches;
-            }
-            if (elem && selector === '#movies-a > ul > li article') {
+            if (selector === '#movies-a > ul > li article') {
                 // Return all articles
-                var articleRegex = /<article[^>]*>([\s\S]*?)<\/article>/gi;
                 var articles = [];
+                var articleRegex = /<article[^>]*>[\s\S]*?<\/article>/gi;
                 var articleMatch;
                 while ((articleMatch = articleRegex.exec(html)) !== null) {
                     var articleHtml = articleMatch[0];
                     articles.push({
                         querySelector: function(subSelector) {
                             if (subSelector === 'header > h2') {
-                                var titleMatch = articleHtml.match(/<h2[^>]*>([^<]+)<\/h2>/i);
+                                var titleMatch = articleHtml.match(/<header[^>]*>[\s\S]*?<h2[^>]*>([^<]+)<\/h2>/i);
                                 return titleMatch ? { textContent: titleMatch[1].trim() } : null;
                             }
                             if (subSelector === 'a') {
                                 var linkMatch = articleHtml.match(/<a[^>]*href="([^"]+)"/i);
-                                return linkMatch ? { getAttribute: function(a) { return linkMatch[1]; } } : null;
+                                return linkMatch ? { getAttribute: function() { return linkMatch[1]; } } : null;
                             }
                             if (subSelector === 'img') {
                                 var imgMatch = articleHtml.match(/<img[^>]*src="([^"]+)"/i);
-                                return imgMatch ? { getAttribute: function(a) { return imgMatch[1]; } } : null;
+                                return imgMatch ? { getAttribute: function() { return imgMatch[1]; } } : null;
                             }
                             return null;
                         }
                     });
                 }
                 return articles;
+            }
+            if (selector === '#aa-options > div > iframe') {
+                // Return all iframes
+                var iframes = [];
+                var iframeRegex = /<iframe[^>]*data-src="([^"]+)"[^>]*>/gi;
+                var iframeMatch;
+                while ((iframeMatch = iframeRegex.exec(html)) !== null) {
+                    iframes.push({
+                        getAttribute: function(attr) {
+                            if (attr === 'data-src') return iframeMatch[1];
+                            return '';
+                        }
+                    });
+                }
+                return iframes;
+            }
+            if (selector === 'div.aa-drp.choose-season > ul > li > a') {
+                var links = [];
+                var seasonDivMatch = html.match(/<div[^>]*aa-drp[^>]*choose-season[^>]*>[\s\S]*?<\/div>/i);
+                if (seasonDivMatch) {
+                    var linkRegex = /<a[^>]*data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>([^<]+)<\/a>/gi;
+                    var linkMatch;
+                    while ((linkMatch = linkRegex.exec(seasonDivMatch[0])) !== null) {
+                        links.push({
+                            getAttribute: function(attr) {
+                                if (attr === 'data-post') return linkMatch[1];
+                                if (attr === 'data-season') return linkMatch[2];
+                                return '';
+                            },
+                            textContent: linkMatch[3] || ''
+                        });
+                    }
+                }
+                return links;
             }
             return elem ? [elem] : [];
         }
@@ -233,96 +258,131 @@ function searchToonStream(query) {
     });
 }
 
-// Extract video URLs from embed pages using regex patterns
-function extractVideoUrls(html) {
-    var videoUrls = [];
-    
-    // Pattern 1: Direct m3u8 URLs (like your examples)
-    var m3u8Pattern = /(https?:\/\/[^\s"'<>]+\.m3u8)/gi;
-    var matches = html.match(m3u8Pattern);
-    if (matches) {
-        for (var i = 0; i < matches.length; i++) {
-            var url = matches[i].replace(/\\\//g, '/'); // Fix escaped slashes
-            if (url.includes('master.m3u8') || url.includes('playlist.m3u8')) {
-                videoUrls.push({
-                    url: url,
-                    type: 'hls',
-                    quality: extractQualityFromUrl(url)
-                });
-            }
-        }
-    }
-    
-    // Pattern 2: JSON payloads containing video URLs
-    var jsonPattern = /"sources"\s*:\s*\[([^\]]+)\]/g;
-    var jsonMatch;
-    while ((jsonMatch = jsonPattern.exec(html)) !== null) {
+// Extract AWSStream/Zephyrflick video URL (from Cloudstream's AWSStream class)
+function extractAWSStreamVideo(embedUrl, referer) {
+    return new Promise(function (resolve) {
         try {
-            var sourcesStr = '[' + jsonMatch[1] + ']';
-            var sources = JSON.parse(sourcesStr);
-            if (Array.isArray(sources)) {
-                for (var j = 0; j < sources.length; j++) {
-                    var source = sources[j];
-                    if (source.file) {
-                        videoUrls.push({
-                            url: source.file,
-                            type: source.type || 'hls',
-                            quality: source.label || extractQualityFromUrl(source.file)
-                        });
-                    }
+            // Extract hash from URL
+            var extractedHash = embedUrl.substring(embedUrl.lastIndexOf('/') + 1);
+            var mainUrl = embedUrl.includes('zephyrflick.top') ? 'https://play.zephyrflick.top' : 'https://z.awstream.net';
+            
+            // Build AJAX request URL
+            var m3u8Url = mainUrl + '/player/index.php?data=' + extractedHash + '&do=getVideo';
+            
+            // Prepare form data
+            var formData = new URLSearchParams();
+            formData.append('hash', extractedHash);
+            formData.append('r', mainUrl);
+            
+            // Make the request
+            fetch(m3u8Url, {
+                method: 'POST',
+                headers: {
+                    'User-Agent': HEADERS['User-Agent'],
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'x-requested-with': 'XMLHttpRequest',
+                    'Referer': referer || embedUrl
+                },
+                body: formData.toString()
+            })
+            .then(function (response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
+            })
+            .then(function (data) {
+                if (data && data.videoSource) {
+                    resolve([{
+                        url: data.videoSource,
+                        quality: '1080p',
+                        serverType: 'AWSStream',
+                        headers: {
+                            'Referer': mainUrl,
+                            'User-Agent': HEADERS['User-Agent']
+                        }
+                    }]);
+                } else {
+                    resolve([]);
                 }
-            }
-        } catch (e) {
-            // Skip invalid JSON
-        }
-    }
-    
-    // Pattern 3: VideoJS player config
-    var videojsPattern = /videojs\s*\(\s*['"][^'"]+['"]\s*,\s*(\{[\s\S]*?\})\s*\)/g;
-    var videojsMatch;
-    while ((videojsMatch = videojsPattern.exec(html)) !== null) {
-        try {
-            var config = JSON.parse(videojsMatch[1]);
-            if (config.sources && Array.isArray(config.sources)) {
-                for (var k = 0; k < config.sources.length; k++) {
-                    var src = config.sources[k];
-                    if (src.src) {
-                        videoUrls.push({
-                            url: src.src,
-                            type: src.type || 'hls',
-                            quality: src.label || extractQualityFromUrl(src.src)
-                        });
-                    }
-                }
-            }
-        } catch (e) {
-            // Skip invalid JSON
-        }
-    }
-    
-    // Pattern 4: Direct mp4/mkv URLs
-    var directPattern = /(https?:\/\/[^\s"'<>]+\.(mp4|mkv|webm|avi|mov))/gi;
-    var directMatches = html.match(directPattern);
-    if (directMatches) {
-        for (var l = 0; l < directMatches.length; l++) {
-            videoUrls.push({
-                url: directMatches[l],
-                type: 'direct',
-                quality: extractQualityFromUrl(directMatches[l])
+            })
+            .catch(function (error) {
+                console.error('[ToonStream] AWSStream extraction error:', error);
+                resolve([]);
             });
+        } catch (error) {
+            console.error('[ToonStream] AWSStream error:', error);
+            resolve([]);
         }
-    }
-    
-    return videoUrls;
+    });
+}
+
+// Extract from embed page
+function extractFromEmbed(embedUrl, referer) {
+    return fetchRequest(embedUrl).then(function (html) {
+        var streams = [];
+        
+        // Check if this is an AWSStream/Zephyrflick embed
+        if (embedUrl.includes('awstream.net') || embedUrl.includes('zephyrflick.top')) {
+            return extractAWSStreamVideo(embedUrl, referer);
+        }
+        
+        // Look for nested iframe
+        var doc = parseHTML(html);
+        var iframe = doc.querySelector('iframe');
+        if (iframe) {
+            var nestedUrl = iframe.getAttribute('src');
+            if (nestedUrl) {
+                // Fix URL if relative
+                if (nestedUrl.startsWith('//')) {
+                    nestedUrl = 'https:' + nestedUrl;
+                } else if (nestedUrl.startsWith('/')) {
+                    var baseDomain = embedUrl.match(/https?:\/\/[^\/]+/)[0];
+                    nestedUrl = baseDomain + nestedUrl;
+                }
+                
+                // Recursively extract from nested iframe
+                return extractFromEmbed(nestedUrl, embedUrl);
+            }
+        }
+        
+        // Look for direct video URLs in the page
+        var videoPatterns = [
+            /(https?:\/\/[^\s"'<>]+\.m3u8)/gi,
+            /(https?:\/\/[^\s"'<>]+\.mp4)/gi,
+            /"file"\s*:\s*"([^"]+\.m3u8)"/gi,
+            /"src"\s*:\s*"([^"]+\.m3u8)"/gi
+        ];
+        
+        for (var i = 0; i < videoPatterns.length; i++) {
+            var matches = html.match(videoPatterns[i]);
+            if (matches) {
+                for (var j = 0; j < matches.length; j++) {
+                    var url = matches[j].replace(/\\\//g, '/').replace(/^"|"$/g, '');
+                    if (url.includes('.m3u8') || url.includes('.mp4')) {
+                        streams.push({
+                            url: url,
+                            quality: extractQualityFromUrl(url),
+                            serverType: 'Direct',
+                            headers: {
+                                'Referer': embedUrl,
+                                'User-Agent': HEADERS['User-Agent']
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        
+        return streams;
+    }).catch(function () {
+        return [];
+    });
 }
 
 // Extract quality from URL
 function extractQualityFromUrl(url) {
     var patterns = [
         /(\d{3,4})p/i,
-        /(\d{3,4})k/i,
         /quality[_-]?(\d{3,4})/i,
-        /res[_-]?(\d{3,4})/i,
         /(\d{3,4})x\d{3,4}/i
     ];
     for (var i = 0; i < patterns.length; i++) {
@@ -332,49 +392,7 @@ function extractQualityFromUrl(url) {
             if (q >= 240 && q <= 4320) return q + 'p';
         }
     }
-    // Check common CDN patterns
-    if (url.includes('1080')) return '1080p';
-    if (url.includes('720')) return '720p';
-    if (url.includes('480')) return '480p';
-    if (url.includes('360')) return '360p';
-    if (url.includes('hd')) return 'HD';
-    if (url.includes('4k')) return '4K';
-    
     return 'Unknown';
-}
-
-// Process iframe embed to extract video URLs
-function processEmbedPage(embedUrl) {
-    return fetchRequest(embedUrl).then(function (html) {
-        // First, try to extract direct video URLs
-        var videoUrls = extractVideoUrls(html);
-        
-        // If no direct URLs found, look for nested iframes
-        if (videoUrls.length === 0) {
-            var doc = parseHTML(html);
-            var iframe = doc.querySelector('iframe');
-            if (iframe) {
-                var nestedUrl = iframe.getAttribute('src');
-                if (nestedUrl) {
-                    // Fix URL if relative
-                    if (nestedUrl.startsWith('//')) {
-                        nestedUrl = 'https:' + nestedUrl;
-                    } else if (nestedUrl.startsWith('/')) {
-                        var baseDomain = embedUrl.match(/https?:\/\/[^\/]+/)[0];
-                        nestedUrl = baseDomain + nestedUrl;
-                    }
-                    
-                    // Process nested iframe
-                    return processEmbedPage(nestedUrl);
-                }
-            }
-        }
-        
-        return videoUrls;
-    }).catch(function (error) {
-        console.error('[ToonStream] Error processing embed:', embedUrl, error);
-        return [];
-    });
 }
 
 // Extract streams from ToonStream page
@@ -413,19 +431,11 @@ function extractMovieStreams(doc, pageUrl) {
             (function (iframe) {
                 var serverLink = iframe.getAttribute('data-src');
                 if (serverLink) {
-                    processEmbedPage(serverLink)
-                        .then(function (videoUrls) {
-                            for (var j = 0; j < videoUrls.length; j++) {
-                                streams.push({
-                                    url: videoUrls[j].url,
-                                    quality: videoUrls[j].quality || 'Unknown',
-                                    serverType: 'ToonStream',
-                                    headers: {
-                                        'Referer': serverLink,
-                                        'User-Agent': HEADERS['User-Agent']
-                                    }
-                                });
-                            }
+                    console.log('[ToonStream] Processing embed:', serverLink);
+                    
+                    extractFromEmbed(serverLink, pageUrl)
+                        .then(function (videoStreams) {
+                            streams = streams.concat(videoStreams);
                             processed++;
                             if (processed === total) resolve(streams);
                         })
@@ -446,70 +456,90 @@ function extractMovieStreams(doc, pageUrl) {
 function extractSeriesStreams(doc, pageUrl, season, episode) {
     return new Promise(function (resolve) {
         var streams = [];
-        var seasonLink = doc.querySelector('div.aa-drp.choose-season > ul > li > a');
+        var seasonLinks = doc.querySelectorAll('div.aa-drp.choose-season > ul > li > a');
         
-        if (!seasonLink) {
+        if (!seasonLinks || seasonLinks.length === 0) {
             resolve(streams);
             return;
         }
         
-        var dataPost = seasonLink.getAttribute('data-post');
-        var dataSeason = seasonLink.getAttribute('data-season');
-        var seasonText = seasonLink.textContent;
+        var processed = 0;
+        var total = seasonLinks.length;
         
-        // If specific season requested, check match
-        if (season && !seasonText.includes('Season ' + season)) {
-            resolve(streams);
-            return;
+        for (var i = 0; i < seasonLinks.length; i++) {
+            (function (seasonLink) {
+                var dataPost = seasonLink.getAttribute('data-post');
+                var dataSeason = seasonLink.getAttribute('data-season');
+                var seasonText = seasonLink.textContent;
+                
+                // If specific season requested, check match
+                if (season && !seasonText.includes('Season ' + season)) {
+                    processed++;
+                    if (processed === total) resolve(streams);
+                    return;
+                }
+                
+                // Load season data via AJAX
+                var formData = new URLSearchParams();
+                formData.append('action', 'action_select_season');
+                formData.append('season', dataSeason);
+                formData.append('post', dataPost);
+                
+                fetch(AJAX_URL, {
+                    method: 'POST',
+                    headers: Object.assign({}, HEADERS, {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }),
+                    body: formData.toString()
+                })
+                .then(function (response) { return response.text(); })
+                .then(function (seasonHtml) {
+                    // Extract episode links from season HTML
+                    var episodeRegex = /<a[^>]*href="([^"]+)"[^>]*>[\s\S]*?Episode\s+(\d+)[\s\S]*?<\/a>/gi;
+                    var episodeMatch;
+                    var episodePromises = [];
+                    
+                    while ((episodeMatch = episodeRegex.exec(seasonHtml)) !== null) {
+                        var episodeUrl = episodeMatch[1];
+                        var episodeNum = parseInt(episodeMatch[2]);
+                        
+                        // If specific episode requested, check match
+                        if (episode && episodeNum !== episode) {
+                            continue;
+                        }
+                        
+                        // Fix URL if needed
+                        if (episodeUrl && !episodeUrl.startsWith('http')) {
+                            episodeUrl = episodeUrl.startsWith('//') ? 'https:' + episodeUrl : MAIN_URL + episodeUrl;
+                        }
+                        
+                        // Extract streams from episode page
+                        var epPromise = extractStreamsFromPage(episodeUrl)
+                            .then(function (episodeStreams) {
+                                streams = streams.concat(episodeStreams);
+                            });
+                        episodePromises.push(epPromise);
+                    }
+                    
+                    // Wait for all episode streams to be processed
+                    Promise.all(episodePromises)
+                        .then(function () {
+                            processed++;
+                            if (processed === total) resolve(streams);
+                        })
+                        .catch(function () {
+                            processed++;
+                            if (processed === total) resolve(streams);
+                        });
+                })
+                .catch(function (error) {
+                    console.error('[ToonStream] Error loading season:', error);
+                    processed++;
+                    if (processed === total) resolve(streams);
+                });
+            })(seasonLinks[i]);
         }
-        
-        // Load season data via AJAX
-        var formData = 'action=action_select_season&season=' + encodeURIComponent(dataSeason) + '&post=' + encodeURIComponent(dataPost);
-        
-        fetch(AJAX_URL, {
-            method: 'POST',
-            headers: Object.assign({}, HEADERS, {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'X-Requested-With': 'XMLHttpRequest'
-            }),
-            body: formData
-        })
-        .then(function (response) { return response.text(); })
-        .then(function (seasonHtml) {
-            // Extract episode links from season HTML
-            var episodeRegex = /<a[^>]*href="([^"]+)"[^>]*>[\s\S]*?Episode\s+(\d+)[\s\S]*?<\/a>/gi;
-            var episodeMatch;
-            
-            while ((episodeMatch = episodeRegex.exec(seasonHtml)) !== null) {
-                var episodeUrl = episodeMatch[1];
-                var episodeNum = parseInt(episodeMatch[2]);
-                
-                // If specific episode requested, check match
-                if (episode && episodeNum !== episode) {
-                    continue;
-                }
-                
-                // Fix URL if needed
-                if (episodeUrl && !episodeUrl.startsWith('http')) {
-                    episodeUrl = episodeUrl.startsWith('//') ? 'https:' + episodeUrl : MAIN_URL + episodeUrl;
-                }
-                
-                // Extract streams from episode page
-                extractStreamsFromPage(episodeUrl)
-                    .then(function (episodeStreams) {
-                        streams = streams.concat(episodeStreams);
-                    });
-            }
-            
-            // Wait for all episode streams to be processed
-            setTimeout(function () {
-                resolve(streams);
-            }, 2000);
-        })
-        .catch(function (error) {
-            console.error('[ToonStream] Error loading season:', error);
-            resolve(streams);
-        });
     });
 }
 
@@ -521,7 +551,7 @@ function formatToNuvioStreams(streams, mediaTitle) {
         var s = streams[i];
         
         links.push({
-            name: 'ToonStream - ' + (s.quality || 'Unknown'),
+            name: 'ToonStream - ' + (s.serverType || 'Unknown') + ' - ' + (s.quality || 'Unknown'),
             title: mediaTitle || '',
             url: s.url,
             quality: s.quality || 'Unknown',
@@ -538,11 +568,21 @@ function formatToNuvioStreams(streams, mediaTitle) {
         });
     }
     
+    // Remove duplicates
+    var uniqueLinks = [];
+    var seenUrls = {};
+    for (var j = 0; j < links.length; j++) {
+        if (!seenUrls[links[j].url]) {
+            seenUrls[links[j].url] = true;
+            uniqueLinks.push(links[j]);
+        }
+    }
+    
     // Sort by quality
     var order = { '4K': 7, '2160p': 7, '1440p': 6, '1080p': 5, '720p': 4, '480p': 3, '360p': 2, '240p': 1, 'Unknown': 0 };
-    links.sort(function (a, b) { return (order[b.quality] || 0) - (order[a.quality] || 0); });
+    uniqueLinks.sort(function (a, b) { return (order[b.quality] || 0) - (order[a.quality] || 0); });
     
-    return links;
+    return uniqueLinks;
 }
 
 // Main Nuvio function
@@ -591,6 +631,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return extractStreamsFromPage(bestMatch.url, season, episode);
         })
         .then(function (streams) {
+            logRid(rid, 'Extracted raw streams', { count: streams.length });
+            
             // Build media title
             var mediaTitle = mediaInfo.title;
             if (mediaType === 'tv' && season && episode) {
@@ -602,7 +644,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             
             var formatted = formatToNuvioStreams(streams, mediaTitle);
-            logRid(rid, 'Returning streams', { count: formatted.length });
+            logRid(rid, 'Returning formatted streams', { count: formatted.length });
             return formatted;
         })
         .catch(function (err) {
