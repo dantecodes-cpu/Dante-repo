@@ -5,7 +5,7 @@ const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.one";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
 
-console.log('[ToonStream] ✅ Provider Initialized');
+console.log('[ToonStream] âœ… Provider Initialized');
 
 async function getStreams(tmdbId, mediaType, season, episode) {
     try {
@@ -171,4 +171,110 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                     const host = new URL(realHost).hostname.replace('www.', '');
                     streams.push({ 
                         name: "ToonStream [Embed]", 
-                        title: host,
+                        title: host, 
+                        type: "iframe", 
+                        url: realHost 
+                    });
+                }
+            } catch (innerErr) { }
+        }
+
+        return streams;
+
+    } catch (e) {
+        console.error(`[ToonStream] Error: ${e.message}`);
+        return [];
+    }
+}
+
+// ==========================================================
+// HELPERS
+// ==========================================================
+
+async function fetchWithTimeout(url, options = {}) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 12000);
+    try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(id);
+        return response;
+    } catch (error) {
+        clearTimeout(id);
+        throw error;
+    }
+}
+
+async function fetchHtml(url, referer = MAIN_URL, method = 'GET', body = null) {
+    try {
+        const headers = {
+            'User-Agent': USER_AGENT,
+            'Referer': referer,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        };
+        if (method === 'POST') {
+            headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+            headers['X-Requested-With'] = 'XMLHttpRequest';
+        }
+        const res = await fetchWithTimeout(url, { method, headers, body });
+        return res.ok ? res.text() : null;
+    } catch (e) { return null; }
+}
+
+async function resolveRedirect(url, referer) {
+    const html = await fetchHtml(url, referer);
+    if (!html) return null;
+    const match = html.match(/<iframe[^>]*src=["']([^"']+)["']/i);
+    return match ? (match[1].startsWith('//') ? 'https:' + match[1] : match[1]) : null;
+}
+
+async function extractAWSStream(url) {
+    try {
+        const domain = new URL(url).origin;
+        const hash = url.split('/').pop().split('?')[0];
+        const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
+        const body = new URLSearchParams(); body.append('hash', hash); body.append('r', domain);
+        const res = await fetchWithTimeout(apiUrl, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': USER_AGENT },
+            body: body
+        });
+        const json = await res.json();
+        return (json && json.videoSource && json.videoSource !== '0') ? json.videoSource : null;
+    } catch (e) { return null; }
+}
+
+async function extractGeneric(url) {
+    try {
+        const html = await fetchHtml(url);
+        if (!html) return [];
+        let content = html;
+        const packerRegex = /(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/;
+        const packedMatch = html.match(packerRegex);
+        if (packedMatch) {
+            const unpacked = unpack(packedMatch[1]);
+            if (unpacked) content += unpacked;
+        }
+        const links = [];
+        const m3u8Regex = /(https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)/gi;
+        let m;
+        while ((m = m3u8Regex.exec(content)) !== null) {
+            const link = m[1].replace(/\\/g, '');
+            if (!links.includes(link) && !link.includes('red/pixel')) links.push(link);
+        }
+        return links;
+    } catch (e) { return []; }
+}
+
+function unpack(p) {
+    try {
+        let params = p.match(/\}\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)/);
+        if (!params) return null;
+        let [_, payload, radix, count, dictionary] = params;
+        dictionary = dictionary.split('|');
+        radix = parseInt(radix);
+        return payload.replace(/\b\w+\b/g, (w) => dictionary[parseInt(w, 36)] || w);
+    } catch (e) { return null; }
+}
+
+if (typeof module !== 'undefined' && module.exports) { module.exports = { getStreams }; }
+else { global.ToonStreamProvider = { getStreams }; }
