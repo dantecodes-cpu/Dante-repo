@@ -1,100 +1,92 @@
-// ToonStream Provider for Nuvio (Fixed based on Kotlin Source)
-// Version: 2.0 (Deep Extraction + AWSStream Support)
+// ToonStream Provider for Nuvio (Fixed Phisher & AWS Logic)
+// Version: 3.0
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.one";
 const AJAX_URL = "https://toonstream.one/wp-admin/admin-ajax.php";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36";
 
-console.log('[ToonStream] ✅ Provider loaded with Kotlin logic parity');
+console.log('[ToonStream] ✅ Provider loaded (v3.0)');
 
-/**
- * Main Nuvio Entry Point
- */
 async function getStreams(tmdbId, mediaType, season, episode) {
-    console.log(`[ToonStream] Request: TMDB ${tmdbId} | ${mediaType} | S${season}E${episode}`);
-
     try {
         // 1. Get Title from TMDB
-        const tmdbResp = await fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`);
+        const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+        const tmdbResp = await fetch(tmdbUrl);
         const tmdbData = await tmdbResp.json();
         const title = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
         const year = (tmdbData.release_date || tmdbData.first_air_date || "").split("-")[0];
 
         if (!title) return [];
-        console.log(`[ToonStream] Searching for: "${title}" (${year})`);
+        console.log(`[ToonStream] Searching: "${title}" (${year})`);
 
-        // 2. Search ToonStream (Kotlin: line 65)
+        // 2. Search ToonStream
         const searchUrl = `${MAIN_URL}/page/1/?s=${encodeURIComponent(title)}`;
         const searchHtml = await fetchHtml(searchUrl);
         if (!searchHtml) return [];
 
-        const results = parseSearchResults(searchHtml, title);
-        if (results.length === 0) {
-            console.log('[ToonStream] No search results found.');
+        const searchResults = parseSearch(searchHtml);
+        const match = findBestMatch(searchResults, title);
+        
+        if (!match) {
+            console.log('[ToonStream] No matching results found.');
             return [];
         }
 
-        let targetUrl = results[0].url;
-        console.log(`[ToonStream] Selected: ${targetUrl}`);
+        let targetUrl = match.url;
+        console.log(`[ToonStream] Match found: ${match.title} -> ${targetUrl}`);
 
-        // 3. Handle TV Episodes via AJAX (Kotlin: line 95)
-        if (mediaType === 'tv' && season && episode) {
-            const contentHtml = await fetchHtml(targetUrl);
-            const epUrl = await getEpisodeUrlViaAjax(contentHtml, season, episode, targetUrl);
-            if (!epUrl) {
-                console.log('[ToonStream] Episode not found.');
+        // 3. TV Series: Handle Season/Episode Selection
+        if (mediaType === 'tv') {
+            const pageHtml = await fetchHtml(targetUrl);
+            targetUrl = await getEpisodeLink(pageHtml, season, episode, targetUrl);
+            if (!targetUrl) {
+                console.log('[ToonStream] Episode link not found.');
                 return [];
             }
-            targetUrl = epUrl;
         }
 
-        console.log(`[ToonStream] Scraping media page: ${targetUrl}`);
-        const finalPageHtml = await fetchHtml(targetUrl);
-        if (!finalPageHtml) return [];
-
-        // 4. Extract Internal Embeds (Kotlin: line 128 "loadLinks")
-        // Toonstream hides the real host inside a local iframe with 'data-src'
-        const embedUrls = extractDataSrcLinks(finalPageHtml);
+        // 4. Extract Links from Final Page
+        console.log(`[ToonStream] Scraping player page: ${targetUrl}`);
+        const playerPageHtml = await fetchHtml(targetUrl);
         
+        // Find "Phisher" links (Local embeds that hide the real source)
+        // Kotlin: document.select("#aa-options > div > iframe").attr("data-src")
+        const phisherLinks = extractPhisherLinks(playerPageHtml);
+        console.log(`[ToonStream] Found ${phisherLinks.length} embed options.`);
+
         const finalStreams = [];
 
-        // 5. Resolve Embeds to Real Hosts (Kotlin: line 131)
-        for (const embed of embedUrls) {
-            const realHost = await resolvePhisherLink(embed);
-            if (realHost) {
-                console.log(`[ToonStream] Found Host: ${realHost}`);
-                
-                // 6. Extract M3U8 from Hosts (Kotlin: AWSStream Class)
-                if (realHost.includes('awstream') || realHost.includes('zephyrflick')) {
-                    const m3u8 = await extractAWSStream(realHost);
-                    if (m3u8) {
-                        finalStreams.push({
-                            name: "ToonStream (HLS)",
-                            type: "url", // Direct playable link
-                            url: m3u8,
-                            title: `Stream ${finalStreams.length + 1} (1080p)`
-                        });
-                    }
-                } else if (realHost.includes('m3u8')) {
+        for (const pLink of phisherLinks) {
+            // Resolve the "Phisher" link to the real Host URL
+            const realHost = await resolvePhisher(pLink, targetUrl);
+            if (!realHost) continue;
+
+            console.log(`[ToonStream] Resolved Host: ${realHost}`);
+
+            // 5. Extract based on Host Type
+            if (realHost.includes('awstream') || realHost.includes('zephyrflick')) {
+                const m3u8 = await extractAWSStream(realHost);
+                if (m3u8) {
                     finalStreams.push({
-                        name: "ToonStream (Direct)",
+                        name: "ToonStream [Fast]",
                         type: "url",
-                        url: realHost,
-                        title: "Direct HLS"
-                    });
-                } else {
-                    // Fallback for supported iframe players (Vidhide, etc)
-                    finalStreams.push({
-                        name: "ToonStream (Embed)",
-                        type: "iframe",
-                        url: realHost,
-                        title: "Embed"
+                        url: m3u8,
+                        title: `Auto (HLS) - ${match.title}`
                     });
                 }
+            } else {
+                // Return other hosts (StreamSB, Vidhide, etc) as generic iframes
+                // Nuvio might allow iframes or have its own extractors for these
+                finalStreams.push({
+                    name: "ToonStream [Embed]",
+                    type: "iframe",
+                    url: realHost,
+                    title: "External Player"
+                });
             }
         }
 
-        console.log(`[ToonStream] ✅ Total streams: ${finalStreams.length}`);
         return finalStreams;
 
     } catch (e) {
@@ -103,148 +95,160 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
 }
 
-/* --- LOGIC HELPERS --- */
+/* --- HELPER FUNCTIONS --- */
 
 async function fetchHtml(url, referer = MAIN_URL) {
     try {
         const res = await fetch(url, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-                'Referer': referer 
+            headers: {
+                'User-Agent': USER_AGENT,
+                'Referer': referer
             }
         });
         return res.ok ? res.text() : null;
-    } catch (e) { return null; }
+    } catch (e) {
+        console.log(`[ToonStream] Fetch failed for ${url}`);
+        return null;
+    }
 }
 
-function parseSearchResults(html, targetTitle) {
+function parseSearch(html) {
     const results = [];
-    // Kotlin: #movies-a > ul > li -> article > a
     const re = /<article[^>]*>[\s\S]*?<a href="([^"]+)"[\s\S]*?<h2[^>]*>([^<]+)<\/h2>/gi;
     let m;
-    const normalizedTarget = targetTitle.toLowerCase().replace(/[^a-z0-9]/g, '');
-
     while ((m = re.exec(html)) !== null) {
-        const title = m[2].replace('Watch Online', '').trim();
-        const normalizedFound = title.toLowerCase().replace(/[^a-z0-9]/g, '');
-        // Simple fuzzy match
-        if (normalizedFound.includes(normalizedTarget) || normalizedTarget.includes(normalizedFound)) {
-            results.push({ url: m[1], title });
-        }
+        results.push({
+            url: m[1],
+            title: m[2].replace('Watch Online', '').trim()
+        });
     }
     return results;
 }
 
-// Fixed based on Kotlin line 95: "action" to "action_select_season"
-async function getEpisodeUrlViaAjax(html, season, episode, pageUrl) {
-    // 1. Find Data attributes
-    const seasonRe = new RegExp(`<a[^>]*data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>.*?Season\\s+${season}\\b`, 'i');
+function findBestMatch(results, targetTitle) {
+    const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = normalize(targetTitle);
+    
+    // Exact match preference
+    const exact = results.find(r => normalize(r.title) === target);
+    if (exact) return exact;
+
+    // Fuzzy match
+    return results.find(r => normalize(r.title).includes(target));
+}
+
+async function getEpisodeLink(html, season, episode, pageUrl) {
+    // 1. Find the Season ID
+    // Regex matches: data-post="123" ... data-season="1" ... >Season 1<
+    const seasonRe = new RegExp(`data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>.*?Season\\s*${season}\\b`, 'i');
     const m = html.match(seasonRe);
+    
     if (!m) return null;
+    const [_, postId, seasonId] = m;
 
-    const [_, dataPost, dataSeason] = m;
+    // 2. AJAX Request for Episodes
+    const params = new URLSearchParams();
+    params.append('action', 'action_select_season');
+    params.append('season', seasonId);
+    params.append('post', postId);
 
-    // 2. Prepare POST data
-    const body = new URLSearchParams({
-        action: 'action_select_season', // FIXED: Was _server in your code
-        season: dataSeason,
-        post: dataPost
-    });
-
-    // 3. Request Episodes
     const res = await fetch(AJAX_URL, {
         method: 'POST',
-        headers: { 
+        headers: {
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'X-Requested-With': 'XMLHttpRequest', 
-            'Referer': pageUrl 
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': pageUrl,
+            'User-Agent': USER_AGENT
         },
-        body: body.toString()
+        body: params.toString()
     });
 
     const ajaxHtml = await res.text();
-    
-    // 4. Parse specific episode link
-    // Logic: Look for text "Episode X" inside the returned HTML
-    const epRe = new RegExp(`<a[^>]*href="([^"]+)"[^>]*>.*?Episode\\s+${episode}<`, 'i');
-    const epM = ajaxHtml.match(epRe);
-    
-    // Fallback: sometimes it's just <span class="num-epi">1x1</span>
-    if (!epM) {
-        // Broad search for any link containing the episode number if strict match fails
-        const fallbackRe = new RegExp(`<a[^>]*href="([^"]+)"[^>]*>.*?(?:Episode|E)\\s*0*${episode}\\b`, 'i');
-        const fbM = ajaxHtml.match(fallbackRe);
-        return fbM ? fbM[1] : null;
-    }
 
-    return epM[1];
+    // 3. Parse specific episode
+    // ToonStream format: <span class="num-epi">1x1</span> ... <a href="...">
+    // We iterate all articles to find the matching numbers
+    const articleRe = /<article[\s\S]*?<span class="num-epi">(\d+)x(\d+)<\/span>[\s\S]*?<a href="([^"]+)"/gi;
+    let epMatch;
+    
+    while ((epMatch = articleRe.exec(ajaxHtml)) !== null) {
+        const sNum = parseInt(epMatch[1]);
+        const eNum = parseInt(epMatch[2]);
+        if (sNum == season && eNum == episode) {
+            return epMatch[3]; // Return the episode URL
+        }
+    }
+    
+    // Fallback: Try matching "Episode X" text if the 1x1 format isn't used
+    const fallbackRe = new RegExp(`<a[^>]*href="([^"]+)"[^>]*>.*?Episode\\s*0*${episode}\\b`, 'i');
+    const fb = ajaxHtml.match(fallbackRe);
+    return fb ? fb[1] : null;
 }
 
-// Kotlin: document.select("#aa-options > div > iframe")
-function extractDataSrcLinks(html) {
+function extractPhisherLinks(html) {
     const links = [];
-    // Regex to capture <iframe ... data-src="..."> inside the options div
-    const re = /data-src="([^"]+)"/gi;
+    // Looking for iframes in the options div with data-src
+    // Also matching generic toonstream embeds
+    const re = /data-src="([^"]*toonstream\.one\/home\/\?trembed=[^"]+)"/gi;
     let m;
     while ((m = re.exec(html)) !== null) {
-        // Decode HTML entities
         links.push(m[1].replace(/&#038;/g, '&'));
     }
     return links;
 }
 
-// Kotlin: "Phisher" logic - fetches the data-src to find the real iframe src
-async function resolvePhisherLink(localEmbedUrl) {
-    const html = await fetchHtml(localEmbedUrl);
+async function resolvePhisher(url, referer) {
+    const html = await fetchHtml(url, referer);
     if (!html) return null;
 
-    // Find the real iframe src inside the local embed
+    // The real iframe is inside this wrapper page
     const re = /<iframe[^>]*src="([^"]+)"/i;
     const m = html.match(re);
     if (m) {
-        let url = m[1];
-        if (url.startsWith('//')) url = 'https:' + url;
-        return url;
+        let src = m[1];
+        if (src.startsWith('//')) src = "https:" + src;
+        return src;
     }
     return null;
 }
 
-// Ported from Kotlin: class AWSStream / class Zephyrflick
 async function extractAWSStream(url) {
     try {
-        const hash = url.split('/').pop().split('?')[0]; // Extract hash from URL
-        const domain = new URL(url).origin;
+        // url is like https://z.awstream.net/v/xxxx or similar
+        const domain = new URL(url).origin; // https://z.awstream.net
+        const hash = url.split('/').pop().replace(/[#?].*$/, '');
+
+        // Kotlin AWSStream Logic:
+        // url = "$mainUrl/player/index.php?data=$extractedHash&do=getVideo"
+        // formdata = "hash": hash, "r": mainUrl
         
-        // AWSStream/Zephyr API Endpoint
         const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
         
-        const body = new URLSearchParams({
-            hash: hash,
-            r: MAIN_URL
-        });
+        const body = new URLSearchParams();
+        body.append('hash', hash);
+        body.append('r', domain); // CRITICAL: This must match the provider domain, not toonstream
 
         const res = await fetch(apiUrl, {
             method: 'POST',
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': USER_AGENT
             },
             body: body.toString()
         });
 
         const json = await res.json();
-        
-        // Return the master playlist if available
-        if (json && json.videoSource) {
+        if (json && json.videoSource && json.videoSource !== '0') {
             return json.videoSource;
         }
     } catch (e) {
-        console.log('AWS Extraction failed', e.message);
+        console.log('[ToonStream] AWS Extraction Error:', e.message);
     }
     return null;
 }
 
-// Nuvio Export
+// Export for Nuvio
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { getStreams };
 } else {
