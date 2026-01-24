@@ -1,4 +1,3 @@
-
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
 var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
@@ -92,8 +91,7 @@ function searchContent(query, platform) {
   console.log(`[NetMirror] Searching for "${query}" on ${platform}...`);
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv",
-    "disney": "hs"
+    "primevideo": "pv"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -105,14 +103,11 @@ function searchContent(query, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // 🔧 PLATFORM-SPECIFIC SEARCH URLS (like Cloudstream)
     let searchUrl;
     if (platform.toLowerCase() === "netflix") {
       searchUrl = `${NETMIRROR_BASE}search.php`;
     } else if (platform.toLowerCase() === "primevideo") {
       searchUrl = `${NETMIRROR_BASE}pv/search.php`;
-    } else if (platform.toLowerCase() === "disney") {
-      searchUrl = `${NETMIRROR_BASE}mobile/hs/search.php`;
     } else {
       searchUrl = `${NETMIRROR_BASE}search.php`;
     }
@@ -135,7 +130,7 @@ function searchContent(query, platform) {
         id: item.id,
         title: item.t,
         posterUrl: `https://imgcdn.media/poster/v/${item.id}.jpg`,
-        platform: platform // Add platform to track where result came from
+        platform: platform
       }));
     } else {
       console.log(`[NetMirror] No results found on ${platform}`);
@@ -146,8 +141,7 @@ function searchContent(query, platform) {
 function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv",
-    "disney": "hs"
+    "primevideo": "pv"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -161,14 +155,11 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     const episodes = [];
     let currentPage = page || 1;
     
-    // 🔧 PLATFORM-SPECIFIC EPISODES URLS
     let episodesUrl;
     if (platform.toLowerCase() === "netflix") {
       episodesUrl = `${NETMIRROR_BASE}episodes.php`;
     } else if (platform.toLowerCase() === "primevideo") {
       episodesUrl = `${NETMIRROR_BASE}pv/episodes.php`;
-    } else if (platform.toLowerCase() === "disney") {
-      episodesUrl = `${NETMIRROR_BASE}mobile/hs/episodes.php`;
     } else {
       episodesUrl = `${NETMIRROR_BASE}episodes.php`;
     }
@@ -205,8 +196,7 @@ function loadContent(contentId, platform) {
   console.log(`[NetMirror] Loading content details for ID: ${contentId} on ${platform}`);
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv",
-    "disney": "hs"
+    "primevideo": "pv"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -218,14 +208,11 @@ function loadContent(contentId, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // 🔧 PLATFORM-SPECIFIC POST URLS
     let postUrl;
     if (platform.toLowerCase() === "netflix") {
       postUrl = `${NETMIRROR_BASE}post.php`;
     } else if (platform.toLowerCase() === "primevideo") {
       postUrl = `${NETMIRROR_BASE}pv/post.php`;
-    } else if (platform.toLowerCase() === "disney") {
-      postUrl = `${NETMIRROR_BASE}mobile/hs/post.php`;
     } else {
       postUrl = `${NETMIRROR_BASE}post.php`;
     }
@@ -274,7 +261,7 @@ function loadContent(contentId, platform) {
           episodes: allEpisodes,
           seasons: postData.season || [],
           isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null,
-          platform: platform // Add platform to content data
+          platform: platform
         };
       });
     }
@@ -286,7 +273,7 @@ function loadContent(contentId, platform) {
       episodes: allEpisodes,
       seasons: postData.season || [],
       isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null,
-      platform: platform // Add platform to content data
+      platform: platform
     };
   });
 }
@@ -294,8 +281,7 @@ function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} on ${platform}`);
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv",
-    "disney": "hs"
+    "primevideo": "pv"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -307,14 +293,11 @@ function getStreamingLinks(contentId, title, platform) {
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // 🔧 PLATFORM-SPECIFIC PLAYLIST URLS (like Cloudstream)
     let playlistUrl;
     if (platform.toLowerCase() === "netflix") {
       playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
     } else if (platform.toLowerCase() === "primevideo") {
       playlistUrl = `${NETMIRROR_BASE}tv/pv/playlist.php`;
-    } else if (platform.toLowerCase() === "disney") {
-      playlistUrl = `${NETMIRROR_BASE}mobile/hs/playlist.php`;
     } else {
       playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
     }
@@ -342,14 +325,12 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
           
-          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
           if (platform.toLowerCase() === "netflix") {
             fullUrl = fullUrl
               .replace("://net51.cc/tv/", "://net51.cc/")
               .replace(/^\/tv\//, "/");
           }
           
-          // ✅ ONLY fix RELATIVE URLs
           if (!fullUrl.startsWith("http")) {
             if (fullUrl.startsWith("//")) {
               fullUrl = "https:" + fullUrl;
@@ -357,7 +338,6 @@ function getStreamingLinks(contentId, title, platform) {
               fullUrl = "https://net51.cc" + fullUrl;
             }
           }
-          // ❌ Do NOTHING else to the URL
           
           sources.push({
             url: fullUrl,
@@ -383,7 +363,6 @@ function getStreamingLinks(contentId, title, platform) {
     });
     console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks on ${platform}`);
     
-    // Debug log for URLs
     if (sources.length > 0) {
       console.log(`[NetMirror] ${platform} sample URL: ${sources[0].url}`);
     }
@@ -441,47 +420,30 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     }
     console.log(`[NetMirror] TMDB Info: "${title}" (${year})`);
     
-    // 🔧 SMART PLATFORM SELECTION BASED ON CONTENT
     let platforms = [];
     
-    
-    // Check if content is likely on specific platforms
     const titleLower = title.toLowerCase();
     const isAmazonOriginal = titleLower.includes("boys") || 
                             titleLower.includes("jack ryan") || 
                             titleLower.includes("the marvelous mrs. maisel") ||
                             titleLower.includes("invincible");
-
-    
-    const isDisneyPlus = titleLower.includes("mandalorian") || 
-                        titleLower.includes("wanda vision") ||
-                        titleLower.includes("loki") ||
-                        titleLower.includes("star wars") ||
-                        titleLower.includes("marvel");
     
     if (isAmazonOriginal) {
       console.log(`[NetMirror] Detected Amazon Original: "${title}" - Searching PrimeVideo first`);
       platforms = ["primevideo", "netflix"];
-    } else if (isDisneyPlus) {
-      console.log(`[NetMirror] Detected Disney+ content: "${title}" - Searching Disney first`);
-      platforms = ["netflix", "primevideo"];
     } else {
-      // Default search order
       platforms = ["netflix", "primevideo"];
     }
     
-    // Try different search strategies based on media type
     let searchStrategies = [];
     
     if (mediaType === "tv") {
-      // For TV shows, try multiple strategies
       searchStrategies = [
         { query: title, desc: "Title only" },
         { query: `${title} ${year}`, desc: "Title with year" },
         { query: `${title} season 1`, desc: "Title with season" }
       ];
     } else {
-      // For movies
       searchStrategies = [
         { query: title, desc: "Title only" },
         { query: `${title} ${year}`, desc: "Title with year" }
@@ -509,40 +471,33 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       return exactMatches / Math.max(words1.length, words2.length);
     }
 
-
-
     function filterRelevantResults(searchResults, query, platform) {
-  const q = query.toLowerCase().trim();
+      const q = query.toLowerCase().trim();
 
-  // 🔴 Cloudstream rule #1: exact title match wins
-  const exactMatches = searchResults.filter(r =>
-    r.title &&
-    r.title.toLowerCase().trim() === q
-  );
+      const exactMatches = searchResults.filter(r =>
+        r.title &&
+        r.title.toLowerCase().trim() === q
+      );
 
-  if (exactMatches.length > 0) {
-    console.log(`[NetMirror] Exact title match found (${platform})`);
-    return exactMatches;
-  }
+      if (exactMatches.length > 0) {
+        console.log(`[NetMirror] Exact title match found (${platform})`);
+        return exactMatches;
+      }
 
-  // 🔴 Cloudstream rule #2: stricter Prime filtering
-  const threshold =
-    platform === "primevideo" ? 0.75 :
-    platform === "disney" ? 0.6 :
-    0.4;
+      const threshold =
+        platform === "primevideo" ? 0.75 :
+        0.4;
 
-  const scored = searchResults
-    .map(result => ({
-      result,
-      similarity: calculateSimilarity(result.title, q)
-    }))
-    .filter(item => item.similarity >= threshold)
-    .sort((a, b) => b.similarity - a.similarity);
+      const scored = searchResults
+        .map(result => ({
+          result,
+          similarity: calculateSimilarity(result.title, q)
+        }))
+        .filter(item => item.similarity >= threshold)
+        .sort((a, b) => b.similarity - a.similarity);
 
-  return scored.map(item => item.result);
-}
-
-    
+      return scored.map(item => item.result);
+    }
     
     function tryPlatform(platformIndex) {
       if (platformIndex >= platforms.length) {
@@ -568,7 +523,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
             return trySearch(strategyIndex + 1);
           }
           
-          // Filter results
           let filteredResults = searchResults;
           if (mediaType === "tv") {
             filteredResults = searchResults.filter(result => {
@@ -601,7 +555,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           console.log(`[NetMirror] Selected on ${platform}: ${selectedContent.title} (ID: ${selectedContent.id})`);
           
           return loadContent(selectedContent.id, platform).then(function(contentData) {
-            // Verify content type
             if (mediaType === "tv" && contentData.isMovie && contentData.seasons.length === 0) {
               console.log(`[NetMirror] Content is a movie on ${platform}, but we want TV series. Trying next strategy...`);
               return trySearch(strategyIndex + 1);
@@ -693,7 +646,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality,
                   type: source.type.includes("mpegURL") ? "hls" : "direct",
                   headers: streamHeaders,
-                  platform: platform // Add platform to stream
+                  platform: platform
                 };
               });
               
