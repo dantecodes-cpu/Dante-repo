@@ -25,7 +25,7 @@ var __spreadValues = (a, b) => {
 
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider");
+console.log("[NetMirror] Provider loaded");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const NETMIRROR_BASE = "https://net51.cc/";
@@ -42,7 +42,7 @@ let globalCookie = "";
 let cookieTimestamp = 0;
 const COOKIE_EXPIRY = 54e6;
 
-/* ---------------------- UTIL ---------------------- */
+/* -------------------- UTIL -------------------- */
 
 function makeRequest(url, options = {}) {
   return fetch(
@@ -63,12 +63,11 @@ function getUnixTime() {
   return Math.floor(Date.now() / 1000);
 }
 
-/* ---------------------- BYPASS ---------------------- */
+/* -------------------- BYPASS -------------------- */
 
 function bypass() {
   const now = Date.now();
   if (globalCookie && cookieTimestamp && now - cookieTimestamp < COOKIE_EXPIRY) {
-    console.log("[NetMirror] Using cached cookie");
     return Promise.resolve(globalCookie);
   }
 
@@ -101,16 +100,15 @@ function bypass() {
   return attempt(0);
 }
 
-/* ---------------------- SEARCH ---------------------- */
+/* -------------------- SEARCH -------------------- */
 
 function searchContent(query, platform) {
-  console.log(`[NetMirror] Searching "${query}" on ${platform}`);
-
   const ottMap = { netflix: "nf", primevideo: "pv", disney: "hs" };
   const ott = ottMap[platform] || "nf";
 
   return bypass().then(cookie => {
-    const cookieString = `t_hash_t=${cookie}; user_token=a0a5f663894ade410614071fe46baca6; ott=${ott}; hd=on`;
+    const cookieString =
+      `t_hash_t=${cookie}; user_token=a0a5f663894ade410614071fe46baca6; ott=${ott}; hd=on`;
 
     const endpoints = {
       netflix: `${NETMIRROR_BASE}search.php`,
@@ -131,7 +129,7 @@ function searchContent(query, platform) {
   })));
 }
 
-/* ---------------------- SIMILARITY (Cloudstream aligned) ---------------------- */
+/* -------------------- SIMILARITY (Cloudstream aligned) -------------------- */
 
 function calculateSimilarity(a, b) {
   const w1 = a.toLowerCase().split(/\W+/);
@@ -143,7 +141,7 @@ function calculateSimilarity(a, b) {
 function filterRelevantResults(results, title, platform) {
   const q = title.toLowerCase().trim();
 
-  // Exact match wins (Cloudstream behavior)
+  // Exact title match first (Cloudstream behavior)
   const exact = results.filter(r => r.title.toLowerCase().trim() === q);
   if (exact.length) return exact;
 
@@ -159,45 +157,77 @@ function filterRelevantResults(results, title, platform) {
     .map(x => x.r);
 }
 
-/* ---------------------- STREAM FETCH ---------------------- */
+/* -------------------- EPISODES -------------------- */
 
-function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null) {
-  const tmdbUrl =
-    `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+function getEpisodesFromSeason(seriesId, seasonId, platform, page = 1) {
+  const ottMap = { netflix: "nf", primevideo: "pv", disney: "hs" };
+  const ott = ottMap[platform] || "nf";
 
-  return makeRequest(tmdbUrl)
-    .then(r => r.json())
-    .then(tmdb => {
-      const title = mediaType === "tv" ? tmdb.name : tmdb.title;
-      const year = (tmdb.release_date || tmdb.first_air_date || "").slice(0, 4);
+  return bypass().then(cookie => {
+    const cookieString =
+      `t_hash_t=${cookie}; user_token=a0a5f663894ade410614071fe46baca6; ott=${ott}; hd=on`;
 
-      let platforms = ["netflix", "primevideo", "disney"];
-      if (title.toLowerCase().includes("boys"))
-        platforms = ["primevideo", "netflix", "disney"];
+    const endpoints = {
+      netflix: `${NETMIRROR_BASE}episodes.php`,
+      primevideo: `${NETMIRROR_BASE}pv/episodes.php`,
+      disney: `${NETMIRROR_BASE}mobile/hs/episodes.php`
+    };
 
-      function tryPlatform(p) {
-        if (p >= platforms.length) return [];
+    const episodes = [];
 
-        const platform = platforms[p];
-        return searchContent(title, platform).then(results => {
-          const filtered = filterRelevantResults(results, title, platform);
-          if (!filtered.length) return tryPlatform(p + 1);
+    function fetchPage(p) {
+      return makeRequest(
+        `${endpoints[platform] || endpoints.netflix}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${p}`,
+        { headers: { Cookie: cookieString, Referer: `${NETMIRROR_BASE}tv/home` } }
+      )
+      .then(r => r.json())
+      .then(d => {
+        if (d.episodes) episodes.push(...d.episodes);
+        return d.nextPageShow === 1 ? fetchPage(p + 1) : episodes;
+      })
+      .catch(() => episodes);
+    }
 
-          return getStreamingLinks(filtered[0].id, title, platform);
-        }).catch(() => tryPlatform(p + 1));
-      }
-
-      return tryPlatform(0);
-    })
-    .catch(e => {
-      console.error("[NetMirror]", e.message);
-      return [];
-    });
+    return fetchPage(page);
+  });
 }
 
-/* ---------------------- PLAYLIST ---------------------- */
+/* -------------------- LOAD CONTENT -------------------- */
 
-function getStreamingLinks(id, title, platform) {
+function loadContent(contentId, platform) {
+  const ottMap = { netflix: "nf", primevideo: "pv", disney: "hs" };
+  const ott = ottMap[platform] || "nf";
+
+  return bypass().then(cookie => {
+    const cookieString =
+      `t_hash_t=${cookie}; user_token=a0a5f663894ade410614071fe46baca6; ott=${ott}; hd=on`;
+
+    const endpoints = {
+      netflix: `${NETMIRROR_BASE}post.php`,
+      primevideo: `${NETMIRROR_BASE}pv/post.php`,
+      disney: `${NETMIRROR_BASE}mobile/hs/post.php`
+    };
+
+    return makeRequest(
+      `${endpoints[platform] || endpoints.netflix}?id=${contentId}&t=${getUnixTime()}`,
+      { headers: { Cookie: cookieString, Referer: `${NETMIRROR_BASE}tv/home` } }
+    );
+  })
+  .then(r => r.json())
+  .then(d => ({
+    id: contentId,
+    title: d.title,
+    description: d.desc,
+    year: d.year,
+    episodes: d.episodes || [],
+    seasons: d.season || [],
+    isMovie: !d.episodes || d.episodes[0] === null
+  }));
+}
+
+/* -------------------- STREAM LINKS -------------------- */
+
+function getStreamingLinks(contentId, title, platform) {
   return bypass().then(cookie => {
     const ottMap = { netflix: "nf", primevideo: "pv", disney: "hs" };
     const ott = ottMap[platform] || "nf";
@@ -212,23 +242,74 @@ function getStreamingLinks(id, title, platform) {
     const cookieString = `t_hash_t=${cookie}; ott=${ott}; hd=on`;
 
     return makeRequest(
-      `${NETMIRROR_BASE}${playlist}?id=${id}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
+      `${NETMIRROR_BASE}${playlist}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
       { headers: { Cookie: cookieString, Referer: `${NETMIRROR_BASE}tv/home` } }
     );
   })
   .then(r => r.json())
-  .then(list => ({
-    sources: (list || []).flatMap(i => i.sources || []).map(s => ({
-      url: s.file.startsWith("http") ? s.file : `https://net51.cc${s.file}`,
-      quality: s.label || "HD",
-      type: "hls",
-      headers: { Referer: "https://net51.cc/" }
-    })),
-    subtitles: []
-  }));
+  .then(list => {
+    const sources = [];
+    const subtitles = [];
+
+    (list || []).forEach(item => {
+      (item.sources || []).forEach(src => {
+        let url = src.file;
+
+        if (platform === "netflix") {
+          url = url.replace("://net51.cc/tv/", "://net51.cc/");
+        }
+
+        if (!url.startsWith("http")) {
+          url = url.startsWith("//") ? `https:${url}` : `https://net51.cc${url}`;
+        }
+
+        sources.push({
+          url,
+          quality: src.label || "HD",
+          type: "hls",
+          headers: { Referer: "https://net51.cc/" }
+        });
+      });
+    });
+
+    return { sources, subtitles };
+  });
 }
 
-/* ---------------------- EXPORT ---------------------- */
+/* -------------------- MAIN -------------------- */
+
+function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null) {
+  const tmdbUrl =
+    `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+
+  return makeRequest(tmdbUrl)
+    .then(r => r.json())
+    .then(tmdb => {
+      const title = mediaType === "tv" ? tmdb.name : tmdb.title;
+
+      let platforms = ["netflix", "primevideo", "disney"];
+      if (title.toLowerCase().includes("boys"))
+        platforms = ["primevideo", "netflix", "disney"];
+
+      function tryPlatform(p) {
+        if (p >= platforms.length) return [];
+
+        const platform = platforms[p];
+        return searchContent(title, platform)
+          .then(results => {
+            const filtered = filterRelevantResults(results, title, platform);
+            if (!filtered.length) return tryPlatform(p + 1);
+            return getStreamingLinks(filtered[0].id, title, platform);
+          })
+          .catch(() => tryPlatform(p + 1));
+      }
+
+      return tryPlatform(0);
+    })
+    .catch(() => []);
+}
+
+/* -------------------- EXPORT -------------------- */
 
 if (typeof module !== "undefined") {
   module.exports = { getStreams };
