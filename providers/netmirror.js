@@ -443,8 +443,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     
     // 🔧 SMART PLATFORM SELECTION BASED ON CONTENT
     let platforms = [];
-    // 🚫 TEMP: disable Disney for debugging
-platforms = ["primevideo", "netflix"];
+    
     
     // Check if content is likely on specific platforms
     const titleLower = title.toLowerCase();
@@ -462,13 +461,13 @@ platforms = ["primevideo", "netflix"];
     
     if (isAmazonOriginal) {
       console.log(`[NetMirror] Detected Amazon Original: "${title}" - Searching PrimeVideo first`);
-      platforms = ["primevideo", "netflix", "disney"];
+      platforms = ["primevideo", "netflix"];
     } else if (isDisneyPlus) {
       console.log(`[NetMirror] Detected Disney+ content: "${title}" - Searching Disney first`);
-      platforms = ["disney", "netflix", "primevideo"];
+      platforms = ["netflix", "primevideo"];
     } else {
       // Default search order
-      platforms = ["netflix", "primevideo", "disney"];
+      platforms = ["netflix", "primevideo"];
     }
     
     // Try different search strategies based on media type
