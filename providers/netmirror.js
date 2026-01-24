@@ -91,7 +91,8 @@ function searchContent(query, platform) {
   console.log(`[NetMirror] Searching for "${query}" on ${platform}...`);
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv"
+    "primevideo": "pv",
+    "disney": "hs"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -102,16 +103,12 @@ function searchContent(query, platform) {
       "hd": "on"
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    
-    let searchUrl;
-    if (platform.toLowerCase() === "netflix") {
-      searchUrl = `${NETMIRROR_BASE}search.php`;
-    } else if (platform.toLowerCase() === "primevideo") {
-      searchUrl = `${NETMIRROR_BASE}pv/search.php`;
-    } else {
-      searchUrl = `${NETMIRROR_BASE}search.php`;
-    }
-    
+    const searchEndpoints = {
+      "netflix": `${NETMIRROR_BASE}search.php`,
+      "primevideo": `${NETMIRROR_BASE}pv/search.php`,
+      "disney": `${NETMIRROR_BASE}mobile/hs/search.php`
+    };
+    const searchUrl = searchEndpoints[platform.toLowerCase()] || searchEndpoints["netflix"];
     return makeRequest(
       `${searchUrl}?s=${encodeURIComponent(query)}&t=${getUnixTime()}`,
       {
@@ -125,15 +122,14 @@ function searchContent(query, platform) {
     return response.json();
   }).then(function(searchData) {
     if (searchData.searchResult && searchData.searchResult.length > 0) {
-      console.log(`[NetMirror] Found ${searchData.searchResult.length} results on ${platform}`);
+      console.log(`[NetMirror] Found ${searchData.searchResult.length} results`);
       return searchData.searchResult.map((item) => ({
         id: item.id,
         title: item.t,
-        posterUrl: `https://imgcdn.media/poster/v/${item.id}.jpg`,
-        platform: platform
+        posterUrl: `https://imgcdn.media/poster/v/${item.id}.jpg`
       }));
     } else {
-      console.log(`[NetMirror] No results found on ${platform}`);
+      console.log("[NetMirror] No results found");
       return [];
     }
   });
@@ -141,7 +137,8 @@ function searchContent(query, platform) {
 function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv"
+    "primevideo": "pv",
+    "disney": "hs"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -154,16 +151,12 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const episodes = [];
     let currentPage = page || 1;
-    
-    let episodesUrl;
-    if (platform.toLowerCase() === "netflix") {
-      episodesUrl = `${NETMIRROR_BASE}episodes.php`;
-    } else if (platform.toLowerCase() === "primevideo") {
-      episodesUrl = `${NETMIRROR_BASE}pv/episodes.php`;
-    } else {
-      episodesUrl = `${NETMIRROR_BASE}episodes.php`;
-    }
-    
+    const episodesEndpoints = {
+      "netflix": `${NETMIRROR_BASE}episodes.php`,
+      "primevideo": `${NETMIRROR_BASE}pv/episodes.php`,
+      "disney": `${NETMIRROR_BASE}mobile/hs/episodes.php`
+    };
+    const episodesUrl = episodesEndpoints[platform.toLowerCase()] || episodesEndpoints["netflix"];
     function fetchPage(pageNum) {
       return makeRequest(
         `${episodesUrl}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${pageNum}`,
@@ -193,10 +186,11 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   });
 }
 function loadContent(contentId, platform) {
-  console.log(`[NetMirror] Loading content details for ID: ${contentId} on ${platform}`);
+  console.log(`[NetMirror] Loading content details for ID: ${contentId}`);
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv"
+    "primevideo": "pv",
+    "disney": "hs"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -207,16 +201,12 @@ function loadContent(contentId, platform) {
       "hd": "on"
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    
-    let postUrl;
-    if (platform.toLowerCase() === "netflix") {
-      postUrl = `${NETMIRROR_BASE}post.php`;
-    } else if (platform.toLowerCase() === "primevideo") {
-      postUrl = `${NETMIRROR_BASE}pv/post.php`;
-    } else {
-      postUrl = `${NETMIRROR_BASE}post.php`;
-    }
-    
+    const postEndpoints = {
+      "netflix": `${NETMIRROR_BASE}post.php`,
+      "primevideo": `${NETMIRROR_BASE}pv/post.php`,
+      "disney": `${NETMIRROR_BASE}mobile/hs/post.php`
+    };
+    const postUrl = postEndpoints[platform.toLowerCase()] || postEndpoints["netflix"];
     return makeRequest(
       `${postUrl}?id=${contentId}&t=${getUnixTime()}`,
       {
@@ -229,10 +219,10 @@ function loadContent(contentId, platform) {
   }).then(function(response) {
     return response.json();
   }).then(function(postData) {
-    console.log(`[NetMirror] Loaded on ${platform}: ${postData.title}`);
+    console.log(`[NetMirror] Loaded: ${postData.title}`);
     let allEpisodes = postData.episodes || [];
     if (postData.episodes && postData.episodes.length > 0 && postData.episodes[0] !== null) {
-      console.log(`[NetMirror] Loading episodes from all seasons on ${platform}...`);
+      console.log("[NetMirror] Loading episodes from all seasons...");
       let episodePromise = Promise.resolve();
       if (postData.nextPageShow === 1 && postData.nextPageSeason) {
         episodePromise = episodePromise.then(function() {
@@ -252,7 +242,7 @@ function loadContent(contentId, platform) {
         });
       }
       return episodePromise.then(function() {
-        console.log(`[NetMirror] Loaded ${allEpisodes.filter((ep) => ep !== null).length} total episodes on ${platform}`);
+        console.log(`[NetMirror] Loaded ${allEpisodes.filter((ep) => ep !== null).length} total episodes`);
         return {
           id: contentId,
           title: postData.title,
@@ -260,8 +250,7 @@ function loadContent(contentId, platform) {
           year: postData.year,
           episodes: allEpisodes,
           seasons: postData.season || [],
-          isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null,
-          platform: platform
+          isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null
         };
       });
     }
@@ -272,16 +261,16 @@ function loadContent(contentId, platform) {
       year: postData.year,
       episodes: allEpisodes,
       seasons: postData.season || [],
-      isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null,
-      platform: platform
+      isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null
     };
   });
 }
 function getStreamingLinks(contentId, title, platform) {
-  console.log(`[NetMirror] Getting streaming links for: ${title} on ${platform}`);
+  console.log(`[NetMirror] Getting streaming links for: ${title}`);
   const ottMap = {
     "netflix": "nf",
-    "primevideo": "pv"
+    "primevideo": "pv",
+    "disney": "hs"
   };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   return bypass().then(function(cookie) {
@@ -292,16 +281,14 @@ function getStreamingLinks(contentId, title, platform) {
       "ott": ott
     };
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    
     let playlistUrl;
-    if (platform.toLowerCase() === "netflix") {
-      playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
-    } else if (platform.toLowerCase() === "primevideo") {
+    if (platform.toLowerCase() === "primevideo") {
       playlistUrl = `${NETMIRROR_BASE}tv/pv/playlist.php`;
+    } else if (platform.toLowerCase() === "disney") {
+      playlistUrl = `${NETMIRROR_BASE}mobile/hs/playlist.php`;
     } else {
       playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
     }
-    
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
       {
@@ -315,7 +302,7 @@ function getStreamingLinks(contentId, title, platform) {
     return response.json();
   }).then(function(playlist) {
     if (!Array.isArray(playlist) || playlist.length === 0) {
-      console.log(`[NetMirror] No streaming links found on ${platform}`);
+      console.log("[NetMirror] No streaming links found");
       return { sources: [], subtitles: [] };
     }
     const sources = [];
@@ -325,12 +312,14 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
           
+          // 🔧 Netflix path fix: remove `/tv/` ONLY for Netflix
           if (platform.toLowerCase() === "netflix") {
             fullUrl = fullUrl
               .replace("://net51.cc/tv/", "://net51.cc/")
               .replace(/^\/tv\//, "/");
           }
           
+          // ✅ ONLY fix RELATIVE URLs
           if (!fullUrl.startsWith("http")) {
             if (fullUrl.startsWith("//")) {
               fullUrl = "https:" + fullUrl;
@@ -338,6 +327,7 @@ function getStreamingLinks(contentId, title, platform) {
               fullUrl = "https://net51.cc" + fullUrl;
             }
           }
+          // ❌ Do NOTHING else to the URL
           
           sources.push({
             url: fullUrl,
@@ -361,10 +351,11 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
     });
-    console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks on ${platform}`);
+    console.log(`[NetMirror] Found ${sources.length} streaming sources and ${subtitles.length} subtitle tracks`);
     
-    if (sources.length > 0) {
-      console.log(`[NetMirror] ${platform} sample URL: ${sources[0].url}`);
+    // Debug log for PrimeVideo URLs
+    if (platform.toLowerCase() === "primevideo" && sources.length > 0) {
+      console.log(`[NetMirror] PrimeVideo sample URL: ${sources[0].url}`);
     }
     
     return { sources, subtitles };
@@ -419,150 +410,77 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       throw new Error("Could not extract title from TMDB response");
     }
     console.log(`[NetMirror] TMDB Info: "${title}" (${year})`);
-    
-    let platforms = [];
-    
-    const titleLower = title.toLowerCase();
-    const isAmazonOriginal = titleLower.includes("boys") || 
-                            titleLower.includes("jack ryan") || 
-                            titleLower.includes("the marvelous mrs. maisel") ||
-                            titleLower.includes("invincible");
-    
-    if (isAmazonOriginal) {
-      console.log(`[NetMirror] Detected Amazon Original: "${title}" - Searching PrimeVideo first`);
-      platforms = ["primevideo", "netflix"];
-    } else {
-      platforms = ["netflix", "primevideo"];
+    let platforms = ["netflix", "primevideo", "disney"];
+    if (title.toLowerCase().includes("boys") || title.toLowerCase().includes("prime")) {
+      platforms = ["primevideo", "netflix", "disney"];
     }
-    
-    let searchStrategies = [];
-    
-    if (mediaType === "tv") {
-      searchStrategies = [
-        { query: title, desc: "Title only" },
-        { query: `${title} ${year}`, desc: "Title with year" },
-        { query: `${title} season 1`, desc: "Title with season" }
-      ];
-    } else {
-      searchStrategies = [
-        { query: title, desc: "Title only" },
-        { query: `${title} ${year}`, desc: "Title with year" }
-      ];
-    }
-    
-    console.log(`[NetMirror] Search order: ${platforms.join(" -> ")}`);
-    
+    console.log(`[NetMirror] Will try search queries: "${title}" and "${title} ${year}"`);
     function calculateSimilarity(str1, str2) {
       const s1 = str1.toLowerCase().trim();
       const s2 = str2.toLowerCase().trim();
-      
-      if (s1 === s2) return 1;
-      
-      const words1 = s1.split(/[\s\-.,:;()]+/).filter((w) => w.length > 0);
-      const words2 = s2.split(/[\s\-.,:;()]+/).filter((w) => w.length > 0);
-      
-      let exactMatches = 0;
-      for (const queryWord of words2) {
-        if (words1.includes(queryWord)) {
-          exactMatches++;
+      if (s1 === s2)
+        return 1;
+      const words1 = s1.split(/\s+/).filter((w) => w.length > 0);
+      const words2 = s2.split(/\s+/).filter((w) => w.length > 0);
+      if (words2.length <= words1.length) {
+        let exactMatches = 0;
+        for (const queryWord of words2) {
+          if (words1.includes(queryWord)) {
+            exactMatches++;
+          }
+        }
+        if (exactMatches === words2.length) {
+          return 0.95 * (exactMatches / words1.length);
         }
       }
-      
-      return exactMatches / Math.max(words1.length, words2.length);
-    }
-
-    function filterRelevantResults(searchResults, query, platform) {
-      const q = query.toLowerCase().trim();
-
-      const exactMatches = searchResults.filter(r =>
-        r.title &&
-        r.title.toLowerCase().trim() === q
-      );
-
-      if (exactMatches.length > 0) {
-        console.log(`[NetMirror] Exact title match found (${platform})`);
-        return exactMatches;
+      if (s1.startsWith(s2)) {
+        return 0.9;
       }
-
-      const threshold =
-        platform === "primevideo" ? 0.75 :
-        0.4;
-
-      const scored = searchResults
-        .map(result => ({
-          result,
-          similarity: calculateSimilarity(result.title, q)
-        }))
-        .filter(item => item.similarity >= threshold)
-        .sort((a, b) => b.similarity - a.similarity);
-
-      return scored.map(item => item.result);
+      return 0;
     }
-    
+    function filterRelevantResults(searchResults, query) {
+      const filtered = searchResults.filter((result) => {
+        const similarity = calculateSimilarity(result.title, query);
+        return similarity >= 0.7;
+      });
+      return filtered.sort((a, b) => {
+        const simA = calculateSimilarity(a.title, query);
+        const simB = calculateSimilarity(b.title, query);
+        return simB - simA;
+      });
+    }
     function tryPlatform(platformIndex) {
       if (platformIndex >= platforms.length) {
         console.log("[NetMirror] No content found on any platform");
         return [];
       }
-      
       const platform = platforms[platformIndex];
       console.log(`[NetMirror] Trying platform: ${platform}`);
-      
-      function trySearch(strategyIndex) {
-        if (strategyIndex >= searchStrategies.length) {
-          console.log(`[NetMirror] All search strategies exhausted for ${platform}`);
-          return null;
-        }
-        
-        const strategy = searchStrategies[strategyIndex];
-        console.log(`[NetMirror] Strategy ${strategyIndex + 1}/${searchStrategies.length}: "${strategy.query}"`);
-        
-        return searchContent(strategy.query, platform).then(function(searchResults) {
+      function trySearch(withYear) {
+        const searchQuery = withYear ? `${title} ${year}` : title;
+        console.log(`[NetMirror] Searching for: "${searchQuery}"`);
+        return searchContent(searchQuery, platform).then(function(searchResults) {
           if (searchResults.length === 0) {
-            console.log(`[NetMirror] No results on ${platform}, trying next strategy...`);
-            return trySearch(strategyIndex + 1);
-          }
-          
-          let filteredResults = searchResults;
-          if (mediaType === "tv") {
-            filteredResults = searchResults.filter(result => {
-              const lowerTitle = result.title.toLowerCase();
-              const movieIndicators = ["(202", "(201", "(200", "(199", "(198"];
-              
-              if (movieIndicators.some(indicator => lowerTitle.includes(indicator))) {
-                const seasonIndicators = ["season", "s01", "s1", "s02", "s2", "series"];
-                if (!seasonIndicators.some(indicator => lowerTitle.includes(indicator))) {
-                  console.log(`[NetMirror] Skipping movie result on ${platform}: ${result.title}`);
-                  return false;
-                }
-              }
-              return true;
-            });
-            
-            if (filteredResults.length === 0) {
-              console.log(`[NetMirror] All results filtered out on ${platform}, trying next strategy...`);
-              return trySearch(strategyIndex + 1);
+            if (!withYear && year) {
+              console.log(`[NetMirror] No results for "${title}", trying with year...`);
+              return trySearch(true);
             }
+            return null;
           }
-          
-          const relevantResults = filterRelevantResults(searchResults, title, platform);
+          const relevantResults = filterRelevantResults(searchResults, title);
           if (relevantResults.length === 0) {
-            console.log(`[NetMirror] No relevant results on ${platform}, trying next strategy...`);
-            return trySearch(strategyIndex + 1);
-          }
-          
-          const selectedContent = relevantResults[0];
-          console.log(`[NetMirror] Selected on ${platform}: ${selectedContent.title} (ID: ${selectedContent.id})`);
-          
-          return loadContent(selectedContent.id, platform).then(function(contentData) {
-            if (mediaType === "tv" && contentData.isMovie && contentData.seasons.length === 0) {
-              console.log(`[NetMirror] Content is a movie on ${platform}, but we want TV series. Trying next strategy...`);
-              return trySearch(strategyIndex + 1);
+            console.log(`[NetMirror] Found ${searchResults.length} results but none were relevant enough`);
+            if (!withYear && year) {
+              console.log(`[NetMirror] Trying with year...`);
+              return trySearch(true);
             }
-            
+            return null;
+          }
+          const selectedContent = relevantResults[0];
+          console.log(`[NetMirror] Selected: ${selectedContent.title} (ID: ${selectedContent.id}) - filtered from ${searchResults.length} results`);
+          return loadContent(selectedContent.id, platform).then(function(contentData) {
             let targetContentId = selectedContent.id;
             let episodeData = null;
-            
             if (mediaType === "tv" && !contentData.isMovie) {
               const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
               episodeData = validEpisodes.find((ep) => {
@@ -579,22 +497,19 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 }
                 return epSeason === (seasonNum || 1) && epNumber === (episodeNum || 1);
               });
-              
               if (episodeData) {
                 targetContentId = episodeData.id;
-                console.log(`[NetMirror] Found episode ID on ${platform}: ${episodeData.id}`);
+                console.log(`[NetMirror] Found episode ID: ${episodeData.id}`);
               } else {
-                console.log(`[NetMirror] Episode not found on ${platform}, trying next strategy...`);
-                return trySearch(strategyIndex + 1);
+                console.log(`[NetMirror] Episode S${seasonNum}E${episodeNum} not found`);
+                return null;
               }
             }
-            
             return getStreamingLinks(targetContentId, title, platform).then(function(streamData) {
               if (!streamData.sources || streamData.sources.length === 0) {
-                console.log(`[NetMirror] No streams on ${platform}, trying next strategy...`);
-                return trySearch(strategyIndex + 1);
+                console.log(`[NetMirror] No streaming links found`);
+                return null;
               }
-              
               const streams = streamData.sources.map((source) => {
                 let quality = "HD";
                 const urlQualityMatch = source.url.match(/[?&]q=(\d+p)/i);
@@ -623,7 +538,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 } else if (source.url.includes("1080p")) {
                   quality = "1080p";
                 }
-                
                 let streamTitle = `${title} ${year ? `(${year})` : ""} ${quality}`;
                 if (mediaType === "tv") {
                   const episodeName = episodeData && episodeData.t ? episodeData.t : "";
@@ -632,7 +546,10 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                     streamTitle += ` - ${episodeName}`;
                   }
                 }
+                const lowerPlatform = (platform || "").toLowerCase();
+                const isNfOrPv = lowerPlatform === "netflix" || lowerPlatform === "primevideo";
                 
+                // ✅ Correct headers - ALWAYS include Referer (Cloudstream behavior)
                 const streamHeaders = {
                   "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
                   "Accept": "*/*",
@@ -645,11 +562,9 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   url: source.url,
                   quality,
                   type: source.type.includes("mpegURL") ? "hls" : "direct",
-                  headers: streamHeaders,
-                  platform: platform
+                  headers: streamHeaders
                 };
               });
-              
               streams.sort((a, b) => {
                 if (a.quality.toLowerCase() === "auto" && b.quality.toLowerCase() !== "auto") {
                   return -1;
@@ -665,15 +580,13 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 const qualityB = parseQuality(b.quality);
                 return qualityB - qualityA;
               });
-              
               console.log(`[NetMirror] Successfully processed ${streams.length} streams from ${platform}`);
               return streams;
             });
           });
         });
       }
-      
-      return trySearch(0).then(function(result) {
+      return trySearch(false).then(function(result) {
         if (result) {
           return result;
         } else {
@@ -685,14 +598,12 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
         return tryPlatform(platformIndex + 1);
       });
     }
-    
     return tryPlatform(0);
   }).catch(function(error) {
     console.error(`[NetMirror] Error in getStreams: ${error.message}`);
     return [];
   });
 }
-
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { getStreams };
 } else {
