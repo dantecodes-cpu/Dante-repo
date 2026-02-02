@@ -18,44 +18,55 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Disney Fix v3)");
+console.log("[NetMirror] Initializing NetMirror provider (V10: Hybrid Auth & Net52 Force)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const NETMIRROR_BASE = "https://net51.cc/";
-const DISNEY_BASE = "https://net20.cc/";
 
-const BASE_HEADERS = {
-  "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36",
-  "Accept": "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.5",
-  "Connection": "keep-alive"
-};
+// 🌍 DOMAIN CONFIGURATION
+const API_BASE_DISNEY = "https://net20.cc/";
+const API_BASE_GENERIC = "https://net51.cc/";
+const CDN_BASE = "https://net52.cc/"; 
 
-// Store cookies per domain to prevent cross-contamination
-const cookieStore = {
-  "https://net51.cc/": { value: "", timestamp: 0 },
-  "https://net20.cc/": { value: "", timestamp: 0 }
-};
-const COOKIE_EXPIRY = 54e6; 
+// 🚫 BAD TOKEN HASH (The one that causes 23002 errors)
+const STUCK_TOKEN_PREFIX = "d944fd";
 
-function getBaseUrl(platform) {
-  return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
+// 🎲 DYNAMIC CHROME UA GENERATOR (For API Auth Only)
+function generateApiUserAgent() {
+    const osVersions = ["10.0", "11.0"]; // Windows versions
+    const os = osVersions[Math.floor(Math.random() * osVersions.length)];
+    const chromeMajor = Math.floor(Math.random() * (125 - 115 + 1)) + 115;
+    const build = Math.floor(Math.random() * 1000);
+    // Using Windows UA for Auth is safer to get a "clean" token than Mobile UA
+    return `Mozilla/5.0 (Windows NT ${os}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.${build} Safari/537.36`;
+}
+
+// Global state to store the session UA
+let currentApiUA = generateApiUserAgent();
+
+function getApiBase(platform) {
+  return platform.toLowerCase() === "disney" ? API_BASE_DISNEY : API_BASE_GENERIC;
 }
 
 function getReferer(platform, isPlaylist = false) {
   if (platform.toLowerCase() === "disney") {
-    // Disney Playlist requires root referer (net20.cc/)
-    // Disney Search/Post requires home referer (net20.cc/home)
-    return isPlaylist ? DISNEY_BASE : `${DISNEY_BASE}home`;
+    // Disney Playlist requires root referer
+    return isPlaylist ? API_BASE_DISNEY : `${API_BASE_DISNEY}home`;
   }
-  return `${NETMIRROR_BASE}tv/home`;
+  return `${API_BASE_GENERIC}tv/home`;
 }
 
 function makeRequest(url, options = {}) {
-  return fetch(url, __spreadProps(__spreadValues({}, options), {
-    headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
-    timeout: 15000
+  const finalUrl = url + (url.includes('?') ? '&' : '?') + `t=${Date.now()}`;
+  
+  return fetch(finalUrl, __spreadProps(__spreadValues({}, options), {
+    headers: __spreadValues(__spreadValues({
+      "X-Requested-With": "XMLHttpRequest",
+      "User-Agent": currentApiUA, // Use the generated Chrome UA for API calls
+      "Accept": "application/json, text/plain, */*",
+      "Connection": "keep-alive"
+    }, {}), options.headers),
+    timeout: 15000,
+    cache: "no-store"
   })).then(function(response) {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -71,49 +82,44 @@ function getUnixTime() {
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function bypass(platform) {
-  const targetBase = getBaseUrl(platform);
-  const now = Date.now();
-  const cached = cookieStore[targetBase];
-
-  if (cached.value && cached.timestamp && now - cached.timestamp < COOKIE_EXPIRY) {
-    return Promise.resolve(cached.value);
-  }
-
-  console.log(`[NetMirror] Bypassing authentication on ${targetBase}...`);
+  const targetBase = getApiBase(platform);
+  
+  // Always regenerate UA on new bypass attempt to ensure uniqueness
+  currentApiUA = generateApiUserAgent();
+  
+  console.log(`[NetMirror] Authenticating with UA: ${currentApiUA}`);
 
   function attemptBypass(attempts) {
-    if (attempts >= 3) {
-      throw new Error("Max bypass attempts reached");
-    }
+    if (attempts >= 5) throw new Error("Could not generate a fresh token after 5 attempts");
 
     return makeRequest(`${targetBase}tv/p.php`, {
       method: "POST",
-      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+      headers: {
         "Referer": getReferer(platform)
-      })
+      }
     }).then(function(response) {
       const setCookieHeader = response.headers.get("set-cookie");
       let extractedCookie = null;
       if (setCookieHeader) {
         const cookieString = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
         const cookieMatch = cookieString.match(/t_hash_t=([^;]+)/);
-        if (cookieMatch) {
-          extractedCookie = cookieMatch[1];
-        }
+        if (cookieMatch) extractedCookie = cookieMatch[1];
       }
       return response.text().then(function(responseText) {
-        // Validation: Check for "r":"n" OR if we successfully got a cookie header
         if (!responseText.includes('"r":"n"') && !extractedCookie) {
-          console.log(`[NetMirror] Bypass attempt ${attempts + 1} failed. Retrying...`);
-          return delay(1000).then(() => attemptBypass(attempts + 1));
+           return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         
         if (extractedCookie) {
-          cookieStore[targetBase] = {
-            value: extractedCookie,
-            timestamp: Date.now()
-          };
-          console.log(`[NetMirror] Authentication successful for ${platform}`);
+          // 🛡️ SECURITY CHECK: Detect Stuck Token
+          if (extractedCookie.startsWith(STUCK_TOKEN_PREFIX)) {
+             console.log(`[NetMirror] ⚠️ Server returned stuck token (${STUCK_TOKEN_PREFIX}...). Regenerating identity...`);
+             // Rotate identity and try again
+             currentApiUA = generateApiUserAgent();
+             return delay(1500).then(() => attemptBypass(attempts + 1));
+          }
+          
+          console.log(`[NetMirror] ✅ Fresh Token Obtained: ${extractedCookie.substring(0, 10)}...`);
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -124,7 +130,7 @@ function bypass(platform) {
 }
 
 function searchContent(query, platform) {
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
@@ -133,14 +139,9 @@ function searchContent(query, platform) {
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
       "hd": "on"
     };
-    
-    // STRICT: No user_token for Disney (Matches Kotlin)
-    if (platform.toLowerCase() !== "disney") {
-      cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
-    }
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-
     const searchEndpoints = {
       "netflix": `${apiBase}search.php`,
       "primevideo": `${apiBase}pv/search.php`,
@@ -150,10 +151,10 @@ function searchContent(query, platform) {
 
     return makeRequest(
       `${searchUrl}?s=${encodeURIComponent(query)}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: {
           "Cookie": cookieString,
           "Referer": referer
-        })
+        }
       }
     );
   }).then(r => r.json()).then(function(searchData) {
@@ -161,7 +162,6 @@ function searchContent(query, platform) {
       return searchData.searchResult.map((item) => {
         let imgHost = "https://imgcdn.media";
         if (platform.toLowerCase() === 'disney') imgHost = "https://imgcdn.kim";
-
         return {
           id: item.id,
           title: item.t,
@@ -174,7 +174,7 @@ function searchContent(query, platform) {
 }
 
 function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
@@ -184,10 +184,8 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
       "hd": "on"
     };
     if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
-
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    const episodes = [];
-
+    
     const episodesEndpoints = {
       "netflix": `${apiBase}episodes.php`,
       "primevideo": `${apiBase}pv/episodes.php`,
@@ -195,33 +193,27 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     };
     const episodesUrl = episodesEndpoints[platform.toLowerCase()] || episodesEndpoints["netflix"];
 
+    const episodes = [];
     function fetchPage(pageNum) {
       return makeRequest(
         `${episodesUrl}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${pageNum}`, {
-          headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          headers: {
             "Cookie": cookieString,
             "Referer": referer
-          })
+          }
         }
       ).then(r => r.json()).then(function(episodeData) {
-        if (episodeData.episodes) {
-          episodes.push(...episodeData.episodes);
-        }
-        if (episodeData.nextPageShow === 0) {
-          return episodes;
-        } else {
-          return fetchPage(pageNum + 1);
-        }
-      }).catch(function(error) {
-        return episodes;
-      });
+        if (episodeData.episodes) episodes.push(...episodeData.episodes);
+        if (episodeData.nextPageShow === 0) return episodes;
+        else return fetchPage(pageNum + 1);
+      }).catch(() => episodes);
     }
     return fetchPage(page || 1);
   });
 }
 
 function loadContent(contentId, platform) {
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
@@ -231,7 +223,6 @@ function loadContent(contentId, platform) {
       "hd": "on"
     };
     if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
-
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
 
     const postEndpoints = {
@@ -243,10 +234,10 @@ function loadContent(contentId, platform) {
 
     return makeRequest(
       `${postUrl}?id=${contentId}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: {
           "Cookie": cookieString,
           "Referer": referer
-        })
+        }
       }
     );
   }).then(r => r.json()).then(function(postData) {
@@ -256,29 +247,22 @@ function loadContent(contentId, platform) {
     if (postData.episodes && postData.episodes.length > 0 && postData.episodes[0] !== null) {
       if (postData.nextPageShow === 1 && postData.nextPageSeason) {
         episodePromise = episodePromise.then(() => getEpisodesFromSeason(contentId, postData.nextPageSeason, platform, 2))
-          .then((more) => {
-            allEpisodes.push(...more);
-          });
+          .then((more) => allEpisodes.push(...more));
       }
       if (postData.season && postData.season.length > 1) {
         postData.season.slice(0, -1).forEach(season => {
           episodePromise = episodePromise.then(() => getEpisodesFromSeason(contentId, season.id, platform, 1))
-            .then((more) => {
-              allEpisodes.push(...more);
-            });
+            .then((more) => allEpisodes.push(...more));
         });
       }
-      return episodePromise.then(function() {
-        return {
-          id: contentId,
-          title: postData.title,
-          episodes: allEpisodes,
-          seasons: postData.season || [],
-          isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null
-        };
-      });
+      return episodePromise.then(() => ({
+        id: contentId,
+        title: postData.title,
+        episodes: allEpisodes,
+        seasons: postData.season || [],
+        isMovie: !postData.episodes || postData.episodes.length === 0 || postData.episodes[0] === null
+      }));
     }
-
     return {
       id: contentId,
       title: postData.title,
@@ -291,8 +275,7 @@ function loadContent(contentId, platform) {
 
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
-  const apiBase = getBaseUrl(platform);
-  // Important: HS uses root as referer for playlist
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform, true);
 
   return bypass(platform).then(function(cookie) {
@@ -302,20 +285,19 @@ function getStreamingLinks(contentId, title, platform) {
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf")
     };
     if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
-
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    let playlistUrl;
 
+    let playlistUrl;
     if (platform.toLowerCase() === "primevideo") playlistUrl = `${apiBase}tv/pv/playlist.php`;
     else if (platform.toLowerCase() === "disney") playlistUrl = `${apiBase}mobile/hs/playlist.php`;
     else playlistUrl = `${apiBase}tv/playlist.php`;
 
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: {
           "Cookie": cookieString,
           "Referer": referer
-        })
+        }
       }
     );
   }).then(r => r.json()).then(function(playlist) {
@@ -328,29 +310,27 @@ function getStreamingLinks(contentId, title, platform) {
     const subtitles = [];
 
     playlist.forEach((item) => {
-      // Process Video Sources
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
 
+          // 1. URL Cleanup
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
 
-          // Force NETMIRROR_BASE (net51) for streams even if API is Disney (net20)
-          // Matches Kotlin: newUrl = "https://net51.cc"
+          // 2. FORCE NET52.CC (The Working CDN)
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-            else if (!fullUrl.startsWith('http')) {
-              fullUrl = new URL(fullUrl, NETMIRROR_BASE).href;
-            }
+            else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, CDN_BASE).href;
           } catch (e) {
-            if (!fullUrl.startsWith('http')) fullUrl = NETMIRROR_BASE + fullUrl.replace(/^\//, '');
+            if (!fullUrl.startsWith('http')) fullUrl = CDN_BASE + fullUrl.replace(/^\//, '');
           }
+          // Hard replacement for net51 -> net52
+          if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
 
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
-
           if (label === "auto" || label === "master") quality = "1080p (Auto)";
           else if (label.includes("1080") || label.includes("full")) quality = "1080p";
           else if (label.includes("720")) quality = "720p";
@@ -364,13 +344,13 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
 
-      // Process Subtitles
       if (item.tracks) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
           let fullSubUrl = track.file;
           try {
             if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
-            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
+            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, CDN_BASE).href;
+            if (fullSubUrl.includes("net51.cc")) fullSubUrl = fullSubUrl.replace("net51.cc", "net52.cc");
           } catch (e) {}
 
           subtitles.push({
@@ -387,7 +367,7 @@ function getStreamingLinks(contentId, title, platform) {
 }
 
 function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null) {
-  console.log(`[NetMirror] Fetching streams for TMDB ID: ${tmdbId}, Type: ${mediaType}`);
+  console.log(`[NetMirror] Fetching streams for TMDB ID: ${tmdbId}`);
   const tmdbUrl = `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}?api_key=${TMDB_API_KEY}`;
 
   return makeRequest(tmdbUrl).then(r => r.json()).then(function(tmdbData) {
@@ -401,7 +381,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     let platforms = ["netflix", "primevideo", "disney"];
     const tLower = title.toLowerCase();
     
-    // Priority Heuristics
     if (tLower.includes("boys") || tLower.includes("prime") || tLower.includes("reacher")) {
       platforms = ["primevideo", "netflix", "disney"];
     } else if (tLower.includes("mandalorian") || tLower.includes("marvel") || tLower.includes("iron") || tLower.includes("star wars") || tLower.includes("bad batch")) {
@@ -412,15 +391,11 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       const s1 = str1.toLowerCase().trim();
       const s2 = str2.toLowerCase().trim();
       if (s1 === s2) return 1;
-      // Lenient check for Disney titles which often have prefixes
       return s1.includes(s2) || s2.includes(s1) ? 0.8 : 0; 
     }
 
     function tryPlatform(platformIndex) {
-      if (platformIndex >= platforms.length) {
-        console.log("[NetMirror] No content found on any platform");
-        return [];
-      }
+      if (platformIndex >= platforms.length) return [];
       const platform = platforms[platformIndex];
 
       function trySearch(withYear) {
@@ -432,8 +407,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           }
 
           const relevantResults = searchResults.filter((result) => {
-            const similarity = calculateSimilarity(result.title, title);
-            if (similarity < 0.5) return false;
+            if (calculateSimilarity(result.title, title) < 0.5) return false;
             if (mediaType === "tv" && result.title.toLowerCase().includes("movie")) return false;
             return true;
           });
@@ -447,33 +421,21 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           console.log(`[NetMirror] Selected: ${selectedContent.title} (ID: ${selectedContent.id}) on ${platform}`);
 
           return loadContent(selectedContent.id, platform).then(function(contentData) {
-            let targetContentId = contentData.id;
+            let targetId = contentData.id;
             
             if (mediaType === "tv") {
-              if(contentData.isMovie) return null; // Type mismatch
-
-              const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
-              const episodeData = validEpisodes.find((ep) => {
-                let epSeason = 1, epNumber = 1;
-                if (ep.s && ep.ep) {
-                  epSeason = parseInt(ep.s.replace("S", ""));
-                  epNumber = parseInt(ep.ep.replace("E", ""));
-                } else if (ep.season && ep.episode) {
-                  epSeason = parseInt(ep.season);
-                  epNumber = parseInt(ep.episode);
-                }
-                return epSeason === (seasonNum || 1) && epNumber === (episodeNum || 1);
+              if(contentData.isMovie) return null;
+              const epData = contentData.episodes.find((ep) => {
+                let s = 1, e = 1;
+                if (ep.s && ep.ep) { s = parseInt(ep.s.replace("S","")); e = parseInt(ep.ep.replace("E","")); }
+                else if (ep.season && ep.episode) { s = parseInt(ep.season); e = parseInt(ep.episode); }
+                return s === (seasonNum || 1) && e === (episodeNum || 1);
               });
-
-              if (episodeData) {
-                targetContentId = episodeData.id;
-              } else {
-                console.log(`[NetMirror] Episode S${seasonNum}E${episodeNum} not found.`);
-                return null;
-              }
+              if (epData) targetId = epData.id;
+              else return null;
             }
 
-            return getStreamingLinks(targetContentId, title, platform).then(function(streamData) {
+            return getStreamingLinks(targetId, title, platform).then(function(streamData) {
               if (!streamData.sources || streamData.sources.length === 0) return null;
 
               const streams = streamData.sources.map((source) => {
@@ -487,9 +449,12 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    "User-Agent": BASE_HEADERS["User-Agent"],
-                    "Referer": NETMIRROR_BASE,
-                    "Cookie": "hd=on" // CRITICAL: Added based on Kotlin Interceptor
+                    // 🌟 STREAMING HEADERS
+                    // 1. NO USER-AGENT: Let player use default to pass TLS check (Avoid 23002)
+                    // 2. REFERER: Point to net52.cc
+                    // 3. COOKIE: hd=on
+                    "Referer": CDN_BASE, 
+                    "Cookie": "hd=on"
                   }
                 };
               });
@@ -498,39 +463,23 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 const score = (q) => {
                   if (q.includes("Auto")) return 10000;
                   if (q.includes("1080")) return 1080;
-                  if (q.includes("720")) return 720;
                   return 0;
                 };
                 return score(b.quality) - score(a.quality);
               });
-
               return streams;
             });
           });
         });
       }
-
-      return trySearch(false).then(function(result) {
-        if (result) return result;
-        // Fallback to next platform if null
-        return tryPlatform(platformIndex + 1);
-      }).catch(e => {
-        console.error(`Error on ${platform}:`, e);
-        return tryPlatform(platformIndex + 1);
-      });
+      return trySearch(false).then(res => res || tryPlatform(platformIndex + 1)).catch(() => tryPlatform(platformIndex + 1));
     }
-
     return tryPlatform(0);
-  }).catch(function(error) {
-    console.error(`[NetMirror] Error: ${error.message}`);
-    return [];
+  }).catch(e => {
+      console.error(e);
+      return [];
   });
 }
 
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = {
-    getStreams
-  };
-} else {
-  global.getStreams = getStreams;
-}
+if (typeof module !== "undefined" && module.exports) module.exports = { getStreams };
+else global.getStreams = getStreams;
