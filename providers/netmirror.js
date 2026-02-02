@@ -18,18 +18,21 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Manifest Fix 23002)");
+console.log("[NetMirror] Initializing NetMirror provider (Dalvik UA Fix)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const NETMIRROR_BASE = "https://net51.cc/";
 const DISNEY_BASE = "https://net20.cc/";
 
-// Headers for API calls (metadata/search) - Needs User-Agent
+// 🚀 CRITICAL FIX: Use Dalvik User-Agent.
+// Servers often block "Chrome" UAs coming from non-browser clients (ExoPlayer/Node)
+// due to TLS Fingerprint mismatches. Dalvik is the correct UA for Android apps.
+const ANDROID_UA = "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)";
+
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36",
+  "User-Agent": ANDROID_UA,
   "Accept": "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.5",
   "Connection": "keep-alive"
 };
 
@@ -37,9 +40,7 @@ const cookieStore = {
   "https://net51.cc/": { value: "", timestamp: 0 },
   "https://net20.cc/": { value: "", timestamp: 0 }
 };
-
-// Reduced cookie expiry to 2 hours to prevent stale tokens
-const COOKIE_EXPIRY = 7200000; 
+const COOKIE_EXPIRY = 7200000; // 2 Hours
 
 function getBaseUrl(platform) {
   return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
@@ -255,6 +256,7 @@ function loadContent(contentId, platform) {
 }
 
 function getStreamingLinks(contentId, title, platform) {
+  console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const apiBase = getBaseUrl(platform);
   const referer = getReferer(platform, true);
 
@@ -281,7 +283,10 @@ function getStreamingLinks(contentId, title, platform) {
       }
     );
   }).then(r => r.json()).then(function(playlist) {
-    if (!Array.isArray(playlist) || playlist.length === 0) return { sources: [], subtitles: [] };
+    if (!Array.isArray(playlist) || playlist.length === 0) {
+      console.log("[NetMirror] No streaming links found");
+      return { sources: [], subtitles: [] };
+    }
 
     const sources = [];
     const subtitles = [];
@@ -290,18 +295,23 @@ function getStreamingLinks(contentId, title, platform) {
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
+
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
+
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-            else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, NETMIRROR_BASE).href;
+            else if (!fullUrl.startsWith('http')) {
+              fullUrl = new URL(fullUrl, NETMIRROR_BASE).href;
+            }
           } catch (e) {
             if (!fullUrl.startsWith('http')) fullUrl = NETMIRROR_BASE + fullUrl.replace(/^\//, '');
           }
 
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
+
           if (label === "auto" || label === "master") quality = "1080p (Auto)";
           else if (label.includes("1080") || label.includes("full")) quality = "1080p";
           else if (label.includes("720")) quality = "720p";
@@ -314,18 +324,24 @@ function getStreamingLinks(contentId, title, platform) {
           });
         });
       }
+
       if (item.tracks) {
-        item.tracks.filter((t) => t.kind === "captions").forEach((t) => {
-          let fullSub = t.file;
+        item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
+          let fullSubUrl = track.file;
           try {
-            if (fullSub.startsWith('//')) fullSub = 'https:' + fullSub;
-            else if (!fullSub.startsWith('http')) fullSub = new URL(fullSub, NETMIRROR_BASE).href;
+            if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
+            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
           } catch (e) {}
-          subtitles.push({ url: fullSub, language: t.label || "English" });
+
+          subtitles.push({
+            url: fullSubUrl,
+            language: track.label || "English"
+          });
         });
       }
     });
 
+    console.log(`[NetMirror] Found ${sources.length} sources.`);
     return { sources, subtitles };
   });
 }
@@ -338,13 +354,16 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     var _a, _b;
     const title = mediaType === "tv" ? tmdbData.name : tmdbData.title;
     const year = mediaType === "tv" ? (_a = tmdbData.first_air_date) == null ? void 0 : _a.substring(0, 4) : (_b = tmdbData.release_date) == null ? void 0 : _b.substring(0, 4);
+    
+    if (!title) throw new Error("Could not extract title from TMDB");
+    console.log(`[NetMirror] TMDB Info: "${title}" (${year})`);
 
     let platforms = ["netflix", "primevideo", "disney"];
     const tLower = title.toLowerCase();
     
     if (tLower.includes("boys") || tLower.includes("prime") || tLower.includes("reacher")) {
       platforms = ["primevideo", "netflix", "disney"];
-    } else if (tLower.includes("mandalorian") || tLower.includes("marvel") || tLower.includes("iron") || tLower.includes("star wars")) {
+    } else if (tLower.includes("mandalorian") || tLower.includes("marvel") || tLower.includes("iron") || tLower.includes("star wars") || tLower.includes("bad batch")) {
       platforms = ["disney", "netflix", "primevideo"];
     }
 
@@ -356,7 +375,10 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     }
 
     function tryPlatform(platformIndex) {
-      if (platformIndex >= platforms.length) return [];
+      if (platformIndex >= platforms.length) {
+        console.log("[NetMirror] No content found on any platform");
+        return [];
+      }
       const platform = platforms[platformIndex];
 
       function trySearch(withYear) {
@@ -368,7 +390,8 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           }
 
           const relevantResults = searchResults.filter((result) => {
-            if (calculateSimilarity(result.title, title) < 0.5) return false;
+            const similarity = calculateSimilarity(result.title, title);
+            if (similarity < 0.5) return false;
             if (mediaType === "tv" && result.title.toLowerCase().includes("movie")) return false;
             return true;
           });
@@ -379,24 +402,36 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           }
 
           const selectedContent = relevantResults[0];
-          console.log(`[NetMirror] Selected: ${selectedContent.title} on ${platform}`);
+          console.log(`[NetMirror] Selected: ${selectedContent.title} (ID: ${selectedContent.id}) on ${platform}`);
 
           return loadContent(selectedContent.id, platform).then(function(contentData) {
-            let targetId = contentData.id;
+            let targetContentId = contentData.id;
             
             if (mediaType === "tv") {
               if(contentData.isMovie) return null;
-              const epData = contentData.episodes.find((ep) => {
-                let s = 1, e = 1;
-                if (ep.s && ep.ep) { s = parseInt(ep.s.replace("S","")); e = parseInt(ep.ep.replace("E","")); }
-                else if (ep.season && ep.episode) { s = parseInt(ep.season); e = parseInt(ep.episode); }
-                return s === (seasonNum || 1) && e === (episodeNum || 1);
+
+              const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
+              const episodeData = validEpisodes.find((ep) => {
+                let epSeason = 1, epNumber = 1;
+                if (ep.s && ep.ep) {
+                  epSeason = parseInt(ep.s.replace("S", ""));
+                  epNumber = parseInt(ep.ep.replace("E", ""));
+                } else if (ep.season && ep.episode) {
+                  epSeason = parseInt(ep.season);
+                  epNumber = parseInt(ep.episode);
+                }
+                return epSeason === (seasonNum || 1) && epNumber === (episodeNum || 1);
               });
-              if (epData) targetId = epData.id;
-              else return null;
+
+              if (episodeData) {
+                targetContentId = episodeData.id;
+              } else {
+                console.log(`[NetMirror] Episode S${seasonNum}E${episodeNum} not found.`);
+                return null;
+              }
             }
 
-            return getStreamingLinks(targetId, title, platform).then(function(streamData) {
+            return getStreamingLinks(targetContentId, title, platform).then(function(streamData) {
               if (!streamData.sources || streamData.sources.length === 0) return null;
 
               const streams = streamData.sources.map((source) => {
@@ -410,7 +445,10 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // FIXED: REMOVED User-Agent to stop server from returning HTML error pages
+                    // 🚀 V4: Use Dalvik UA here too.
+                    // This matches the UA used to generate the token, ensuring the server
+                    // accepts the request, while also passing the TLS check.
+                    "User-Agent": ANDROID_UA,
                     "Referer": NETMIRROR_BASE,
                     "Cookie": "hd=on"
                   }
@@ -421,23 +459,38 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 const score = (q) => {
                   if (q.includes("Auto")) return 10000;
                   if (q.includes("1080")) return 1080;
+                  if (q.includes("720")) return 720;
                   return 0;
                 };
                 return score(b.quality) - score(a.quality);
               });
+
               return streams;
             });
           });
         });
       }
-      return trySearch(false).then(res => res || tryPlatform(platformIndex + 1)).catch(() => tryPlatform(platformIndex + 1));
+
+      return trySearch(false).then(function(result) {
+        if (result) return result;
+        return tryPlatform(platformIndex + 1);
+      }).catch(e => {
+        console.error(`Error on ${platform}:`, e);
+        return tryPlatform(platformIndex + 1);
+      });
     }
+
     return tryPlatform(0);
-  }).catch(e => {
-      console.error(e);
-      return [];
+  }).catch(function(error) {
+    console.error(`[NetMirror] Error: ${error.message}`);
+    return [];
   });
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { getStreams };
-else global.getStreams = getStreams;
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    getStreams
+  };
+} else {
+  global.getStreams = getStreams;
+}
