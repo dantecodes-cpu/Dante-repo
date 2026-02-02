@@ -18,25 +18,25 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Native Player Mode)");
+console.log("[NetMirror] Initializing NetMirror provider (No-Cache/Fresh Token)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const NETMIRROR_BASE = "https://net51.cc/";
 const DISNEY_BASE = "https://net20.cc/";
 
-// API Headers: Use Android UA to get Mobile API responses
+// API Headers: Standard Android Chrome UA to pass Cloudflare on the API side
 const API_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
   "Accept": "application/json, text/plain, */*",
   "Connection": "keep-alive"
 };
 
+// CACHE DISABLED: Force fresh token every time to avoid 23002 on stale tokens
 const cookieStore = {
   "https://net51.cc/": { value: "", timestamp: 0 },
   "https://net20.cc/": { value: "", timestamp: 0 }
 };
-const COOKIE_EXPIRY = 7200000; // 2 Hours
 
 function getBaseUrl(platform) {
   return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
@@ -69,13 +69,10 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function bypass(platform) {
   const targetBase = getBaseUrl(platform);
-  const now = Date.now();
-  const cached = cookieStore[targetBase];
-
-  if (cached.value && cached.timestamp && now - cached.timestamp < COOKIE_EXPIRY) {
-    return Promise.resolve(cached.value);
-  }
-
+  
+  // NOTE: We intentionally removed the cache check here.
+  // We want a fresh cookie for every request sequence to ensure the token isn't banned.
+  
   function attemptBypass(attempts) {
     if (attempts >= 3) throw new Error("Max bypass attempts reached");
 
@@ -97,7 +94,6 @@ function bypass(platform) {
           return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         if (extractedCookie) {
-          cookieStore[targetBase] = { value: extractedCookie, timestamp: Date.now() };
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -425,8 +421,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // FIXED: REMOVE User-Agent entirely for playback.
-                    // This lets ExoPlayer use its default UA, matching the TLS fingerprint.
+                    // REMOVED User-Agent to allow player default.
                     "Referer": NETMIRROR_BASE,
                     "Cookie": "hd=on"
                   }
