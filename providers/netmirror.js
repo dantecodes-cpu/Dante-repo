@@ -18,37 +18,30 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (V9: Dynamic Identity)");
+console.log("[NetMirror] Initializing NetMirror provider (V10: Hybrid Auth & Net52 Force)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🌍 DOMAIN CONFIGURATION (Updated based on your inspection)
+// 🌍 DOMAIN CONFIGURATION
 const API_BASE_DISNEY = "https://net20.cc/";
 const API_BASE_GENERIC = "https://net51.cc/";
 const CDN_BASE = "https://net52.cc/"; 
 
-// 🎲 DYNAMIC USER-AGENT GENERATOR
-// Randomizes the Chrome version and Build ID to force a fresh token hash from the server.
-function generateUserAgent() {
-    const androidVersions = ["10", "11", "12", "13"];
-    const av = androidVersions[Math.floor(Math.random() * androidVersions.length)];
-    const chromeMajor = Math.floor(Math.random() * (125 - 110 + 1)) + 110; // Random Chrome 110-125
-    const buildId = Math.floor(Math.random() * 1000000);
-    return `Mozilla/5.0 (Linux; Android ${av}; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.0 Mobile Safari/537.36 Build/${buildId}`;
+// 🚫 BAD TOKEN HASH (The one that causes 23002 errors)
+const STUCK_TOKEN_PREFIX = "d944fd";
+
+// 🎲 DYNAMIC CHROME UA GENERATOR (For API Auth Only)
+function generateApiUserAgent() {
+    const osVersions = ["10.0", "11.0"]; // Windows versions
+    const os = osVersions[Math.floor(Math.random() * osVersions.length)];
+    const chromeMajor = Math.floor(Math.random() * (125 - 115 + 1)) + 115;
+    const build = Math.floor(Math.random() * 1000);
+    // Using Windows UA for Auth is safer to get a "clean" token than Mobile UA
+    return `Mozilla/5.0 (Windows NT ${os}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.${build} Safari/537.36`;
 }
 
-const SESSION_UA = generateUserAgent();
-console.log(`[NetMirror] Session User-Agent: ${SESSION_UA}`);
-
-// Stream UA: Standard OkHttp to pass player checks (mimics Cloudstream)
-const STREAM_UA = "okhttp/4.12.0";
-
-const BASE_HEADERS = {
-  "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": SESSION_UA,
-  "Accept": "application/json, text/plain, */*",
-  "Connection": "keep-alive"
-};
+// Global state to store the session UA
+let currentApiUA = generateApiUserAgent();
 
 function getApiBase(platform) {
   return platform.toLowerCase() === "disney" ? API_BASE_DISNEY : API_BASE_GENERIC;
@@ -56,17 +49,22 @@ function getApiBase(platform) {
 
 function getReferer(platform, isPlaylist = false) {
   if (platform.toLowerCase() === "disney") {
+    // Disney Playlist requires root referer
     return isPlaylist ? API_BASE_DISNEY : `${API_BASE_DISNEY}home`;
   }
   return `${API_BASE_GENERIC}tv/home`;
 }
 
 function makeRequest(url, options = {}) {
-  // Anti-cache param
   const finalUrl = url + (url.includes('?') ? '&' : '?') + `t=${Date.now()}`;
   
   return fetch(finalUrl, __spreadProps(__spreadValues({}, options), {
-    headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
+    headers: __spreadValues(__spreadValues({
+      "X-Requested-With": "XMLHttpRequest",
+      "User-Agent": currentApiUA, // Use the generated Chrome UA for API calls
+      "Accept": "application/json, text/plain, */*",
+      "Connection": "keep-alive"
+    }, {}), options.headers),
     timeout: 15000,
     cache: "no-store"
   })).then(function(response) {
@@ -85,20 +83,20 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function bypass(platform) {
   const targetBase = getApiBase(platform);
-  // Remove "Origin" if it causes issues, but usually safer without it for simple bypass
-  // relying on Referer and fresh UA.
-  const bypassHeaders = {
-    "Referer": getReferer(platform)
-  };
-
-  console.log(`[NetMirror] Authenticating on ${targetBase}...`);
+  
+  // Always regenerate UA on new bypass attempt to ensure uniqueness
+  currentApiUA = generateApiUserAgent();
+  
+  console.log(`[NetMirror] Authenticating with UA: ${currentApiUA}`);
 
   function attemptBypass(attempts) {
-    if (attempts >= 3) throw new Error("Max bypass attempts reached");
+    if (attempts >= 5) throw new Error("Could not generate a fresh token after 5 attempts");
 
     return makeRequest(`${targetBase}tv/p.php`, {
       method: "POST",
-      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), bypassHeaders)
+      headers: {
+        "Referer": getReferer(platform)
+      }
     }).then(function(response) {
       const setCookieHeader = response.headers.get("set-cookie");
       let extractedCookie = null;
@@ -111,13 +109,17 @@ function bypass(platform) {
         if (!responseText.includes('"r":"n"') && !extractedCookie) {
            return delay(1000).then(() => attemptBypass(attempts + 1));
         }
+        
         if (extractedCookie) {
-          // Check for the known bad token prefix (just in case)
-          if (extractedCookie.startsWith("d944fd")) {
-             console.log("[NetMirror] Token stuck. Retrying with delay...");
-             return delay(2000).then(() => attemptBypass(attempts + 1));
+          // 🛡️ SECURITY CHECK: Detect Stuck Token
+          if (extractedCookie.startsWith(STUCK_TOKEN_PREFIX)) {
+             console.log(`[NetMirror] ⚠️ Server returned stuck token (${STUCK_TOKEN_PREFIX}...). Regenerating identity...`);
+             // Rotate identity and try again
+             currentApiUA = generateApiUserAgent();
+             return delay(1500).then(() => attemptBypass(attempts + 1));
           }
-          console.log(`[NetMirror] Fresh Token: ${extractedCookie.substring(0, 10)}...`);
+          
+          console.log(`[NetMirror] ✅ Fresh Token Obtained: ${extractedCookie.substring(0, 10)}...`);
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -149,10 +151,10 @@ function searchContent(query, platform) {
 
     return makeRequest(
       `${searchUrl}?s=${encodeURIComponent(query)}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: {
           "Cookie": cookieString,
           "Referer": referer
-        })
+        }
       }
     );
   }).then(r => r.json()).then(function(searchData) {
@@ -195,10 +197,10 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     function fetchPage(pageNum) {
       return makeRequest(
         `${episodesUrl}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${pageNum}`, {
-          headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          headers: {
             "Cookie": cookieString,
             "Referer": referer
-          })
+          }
         }
       ).then(r => r.json()).then(function(episodeData) {
         if (episodeData.episodes) episodes.push(...episodeData.episodes);
@@ -232,10 +234,10 @@ function loadContent(contentId, platform) {
 
     return makeRequest(
       `${postUrl}?id=${contentId}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: {
           "Cookie": cookieString,
           "Referer": referer
-        })
+        }
       }
     );
   }).then(r => r.json()).then(function(postData) {
@@ -292,10 +294,10 @@ function getStreamingLinks(contentId, title, platform) {
 
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: {
           "Cookie": cookieString,
           "Referer": referer
-        })
+        }
       }
     );
   }).then(r => r.json()).then(function(playlist) {
@@ -317,15 +319,14 @@ function getStreamingLinks(contentId, title, platform) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
 
-          // 2. Resolve to NET52.CC (FORCE)
+          // 2. FORCE NET52.CC (The Working CDN)
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
             else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, CDN_BASE).href;
           } catch (e) {
             if (!fullUrl.startsWith('http')) fullUrl = CDN_BASE + fullUrl.replace(/^\//, '');
           }
-          
-          // CRITICAL: Replace net51 with net52 if found
+          // Hard replacement for net51 -> net52
           if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
 
           let quality = "HD";
@@ -448,9 +449,11 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // Use okhttp UA for playback to match Cloudstream behavior
-                    "User-Agent": STREAM_UA,
-                    "Referer": CDN_BASE, // net52.cc
+                    // 🌟 STREAMING HEADERS
+                    // 1. NO USER-AGENT: Let player use default to pass TLS check (Avoid 23002)
+                    // 2. REFERER: Point to net52.cc
+                    // 3. COOKIE: hd=on
+                    "Referer": CDN_BASE, 
                     "Cookie": "hd=on"
                   }
                 };
