@@ -18,20 +18,16 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Dalvik UA Fix)");
+console.log("[NetMirror] Initializing NetMirror provider (Native Player Mode)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const NETMIRROR_BASE = "https://net51.cc/";
 const DISNEY_BASE = "https://net20.cc/";
 
-// 🚀 CRITICAL FIX: Use Dalvik User-Agent.
-// Servers often block "Chrome" UAs coming from non-browser clients (ExoPlayer/Node)
-// due to TLS Fingerprint mismatches. Dalvik is the correct UA for Android apps.
-const ANDROID_UA = "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)";
-
-const BASE_HEADERS = {
+// API Headers: Use Android UA to get Mobile API responses
+const API_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": ANDROID_UA,
+  "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)",
   "Accept": "application/json, text/plain, */*",
   "Connection": "keep-alive"
 };
@@ -55,7 +51,7 @@ function getReferer(platform, isPlaylist = false) {
 
 function makeRequest(url, options = {}) {
   return fetch(url, __spreadProps(__spreadValues({}, options), {
-    headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
+    headers: __spreadValues(__spreadValues({}, API_HEADERS), options.headers),
     timeout: 15000
   })).then(function(response) {
     if (!response.ok) {
@@ -85,7 +81,7 @@ function bypass(platform) {
 
     return makeRequest(`${targetBase}tv/p.php`, {
       method: "POST",
-      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+      headers: __spreadProps(__spreadValues({}, API_HEADERS), {
         "Referer": getReferer(platform)
       })
     }).then(function(response) {
@@ -133,7 +129,7 @@ function searchContent(query, platform) {
 
     return makeRequest(
       `${searchUrl}?s=${encodeURIComponent(query)}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: __spreadProps(__spreadValues({}, API_HEADERS), {
           "Cookie": cookieString,
           "Referer": referer
         })
@@ -179,7 +175,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     function fetchPage(pageNum) {
       return makeRequest(
         `${episodesUrl}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${pageNum}`, {
-          headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+          headers: __spreadProps(__spreadValues({}, API_HEADERS), {
             "Cookie": cookieString,
             "Referer": referer
           })
@@ -216,7 +212,7 @@ function loadContent(contentId, platform) {
 
     return makeRequest(
       `${postUrl}?id=${contentId}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: __spreadProps(__spreadValues({}, API_HEADERS), {
           "Cookie": cookieString,
           "Referer": referer
         })
@@ -276,7 +272,7 @@ function getStreamingLinks(contentId, title, platform) {
 
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
+        headers: __spreadProps(__spreadValues({}, API_HEADERS), {
           "Cookie": cookieString,
           "Referer": referer
         })
@@ -375,10 +371,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     }
 
     function tryPlatform(platformIndex) {
-      if (platformIndex >= platforms.length) {
-        console.log("[NetMirror] No content found on any platform");
-        return [];
-      }
+      if (platformIndex >= platforms.length) return [];
       const platform = platforms[platformIndex];
 
       function trySearch(withYear) {
@@ -390,8 +383,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           }
 
           const relevantResults = searchResults.filter((result) => {
-            const similarity = calculateSimilarity(result.title, title);
-            if (similarity < 0.5) return false;
+            if (calculateSimilarity(result.title, title) < 0.5) return false;
             if (mediaType === "tv" && result.title.toLowerCase().includes("movie")) return false;
             return true;
           });
@@ -405,33 +397,21 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           console.log(`[NetMirror] Selected: ${selectedContent.title} (ID: ${selectedContent.id}) on ${platform}`);
 
           return loadContent(selectedContent.id, platform).then(function(contentData) {
-            let targetContentId = contentData.id;
+            let targetId = contentData.id;
             
             if (mediaType === "tv") {
               if(contentData.isMovie) return null;
-
-              const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
-              const episodeData = validEpisodes.find((ep) => {
-                let epSeason = 1, epNumber = 1;
-                if (ep.s && ep.ep) {
-                  epSeason = parseInt(ep.s.replace("S", ""));
-                  epNumber = parseInt(ep.ep.replace("E", ""));
-                } else if (ep.season && ep.episode) {
-                  epSeason = parseInt(ep.season);
-                  epNumber = parseInt(ep.episode);
-                }
-                return epSeason === (seasonNum || 1) && epNumber === (episodeNum || 1);
+              const epData = contentData.episodes.find((ep) => {
+                let s = 1, e = 1;
+                if (ep.s && ep.ep) { s = parseInt(ep.s.replace("S","")); e = parseInt(ep.ep.replace("E","")); }
+                else if (ep.season && ep.episode) { s = parseInt(ep.season); e = parseInt(ep.episode); }
+                return s === (seasonNum || 1) && e === (episodeNum || 1);
               });
-
-              if (episodeData) {
-                targetContentId = episodeData.id;
-              } else {
-                console.log(`[NetMirror] Episode S${seasonNum}E${episodeNum} not found.`);
-                return null;
-              }
+              if (epData) targetId = epData.id;
+              else return null;
             }
 
-            return getStreamingLinks(targetContentId, title, platform).then(function(streamData) {
+            return getStreamingLinks(targetId, title, platform).then(function(streamData) {
               if (!streamData.sources || streamData.sources.length === 0) return null;
 
               const streams = streamData.sources.map((source) => {
@@ -445,10 +425,8 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // 🚀 V4: Use Dalvik UA here too.
-                    // This matches the UA used to generate the token, ensuring the server
-                    // accepts the request, while also passing the TLS check.
-                    "User-Agent": ANDROID_UA,
+                    // FIXED: REMOVE User-Agent entirely for playback.
+                    // This lets ExoPlayer use its default UA, matching the TLS fingerprint.
                     "Referer": NETMIRROR_BASE,
                     "Cookie": "hd=on"
                   }
@@ -459,38 +437,23 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 const score = (q) => {
                   if (q.includes("Auto")) return 10000;
                   if (q.includes("1080")) return 1080;
-                  if (q.includes("720")) return 720;
                   return 0;
                 };
                 return score(b.quality) - score(a.quality);
               });
-
               return streams;
             });
           });
         });
       }
-
-      return trySearch(false).then(function(result) {
-        if (result) return result;
-        return tryPlatform(platformIndex + 1);
-      }).catch(e => {
-        console.error(`Error on ${platform}:`, e);
-        return tryPlatform(platformIndex + 1);
-      });
+      return trySearch(false).then(res => res || tryPlatform(platformIndex + 1)).catch(() => tryPlatform(platformIndex + 1));
     }
-
     return tryPlatform(0);
-  }).catch(function(error) {
-    console.error(`[NetMirror] Error: ${error.message}`);
-    return [];
+  }).catch(e => {
+      console.error(e);
+      return [];
   });
 }
 
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = {
-    getStreams
-  };
-} else {
-  global.getStreams = getStreams;
-}
+if (typeof module !== "undefined" && module.exports) module.exports = { getStreams };
+else global.getStreams = getStreams;
