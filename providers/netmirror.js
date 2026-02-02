@@ -18,26 +18,26 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (V7: Force Net52 & Token Reset)");
+console.log("[NetMirror] Initializing NetMirror provider (V8: Origin Fix + OkHttp)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🔧 CONFIGURATION
+// 🌍 DOMAIN CONFIGURATION
 const API_BASE_DISNEY = "https://net20.cc/";
 const API_BASE_GENERIC = "https://net51.cc/";
-const WORKING_CDN = "net52.cc"; // The domain we want to force
-const BAD_CDN = "net51.cc";     // The domain we want to replace
+const CDN_BASE = "https://net52.cc/"; // Working CDN
 
-const ANDROID_UA = "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)";
+// 🤖 USER-AGENTS
+// API_UA: Needs to look like a phone browser to pass Cloudflare/DDoS checks
+const API_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+// STREAM_UA: Needs to look like a generic player library to avoid TLS mismatch
+const STREAM_UA = "okhttp/4.12.0";
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": ANDROID_UA,
+  "User-Agent": API_UA,
   "Accept": "application/json, text/plain, */*",
-  "Connection": "keep-alive",
-  "Cache-Control": "no-cache, no-store, must-revalidate",
-  "Pragma": "no-cache",
-  "Expires": "0"
+  "Connection": "keep-alive"
 };
 
 function getApiBase(platform) {
@@ -52,10 +52,10 @@ function getReferer(platform, isPlaylist = false) {
 }
 
 function makeRequest(url, options = {}) {
-  // Add random query param to URL to prevent fetch caching
-  const antiCacheUrl = url + (url.includes('?') ? '&' : '?') + `_=${Date.now()}`;
+  // Add timestamp to prevent caching
+  const finalUrl = url + (url.includes('?') ? '&' : '?') + `_=${Date.now()}`;
   
-  return fetch(antiCacheUrl, __spreadProps(__spreadValues({}, options), {
+  return fetch(finalUrl, __spreadProps(__spreadValues({}, options), {
     headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
     timeout: 15000,
     cache: "no-store"
@@ -75,18 +75,22 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function bypass(platform) {
   const targetBase = getApiBase(platform);
+  const referer = getReferer(platform);
   
-  // Always attempt fresh bypass
-  console.log(`[NetMirror] Generating fresh auth token on ${targetBase}...`);
+  // NOTE: Added 'Origin' header here which is crucial for POST requests
+  const bypassHeaders = {
+    "Referer": referer,
+    "Origin": targetBase.slice(0, -1) // Remove trailing slash for Origin
+  };
+
+  console.log(`[NetMirror] Generating token on ${targetBase}...`);
 
   function attemptBypass(attempts) {
     if (attempts >= 3) throw new Error("Max bypass attempts reached");
 
     return makeRequest(`${targetBase}tv/p.php`, {
       method: "POST",
-      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
-        "Referer": getReferer(platform)
-      })
+      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), bypassHeaders)
     }).then(function(response) {
       const setCookieHeader = response.headers.get("set-cookie");
       let extractedCookie = null;
@@ -100,12 +104,10 @@ function bypass(platform) {
            return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         if (extractedCookie) {
-          // Verify we aren't getting the stuck token
           if (extractedCookie.startsWith("d944fd")) {
-             console.log("[NetMirror] Warning: Server returned stuck token. Retrying...");
+             console.log("[NetMirror] Warning: Stale token detected. Retrying...");
              return delay(1500).then(() => attemptBypass(attempts + 1));
           }
-          console.log(`[NetMirror] New Token: ${extractedCookie.substring(0, 8)}...`);
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -300,29 +302,24 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
 
-          // 🧹 URL SANITIZATION & REPLACEMENT
-          
-          // 1. Clean Netflix paths
+          // 1. URL Cleanup
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
-          
-          // 2. Ensure Absolute URL
-          if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-          else if (!fullUrl.startsWith('http')) {
-             // If relative, prepend preferred CDN
-             fullUrl = `https://${WORKING_CDN}/` + fullUrl.replace(/^\//, '');
-          }
 
-          // 3. FORCE DOMAIN SWAP (net51 -> net52)
-          // If the API returns net51.cc, we forcefully overwrite it to net52.cc
-          if (fullUrl.includes(BAD_CDN)) {
-             fullUrl = fullUrl.replace(BAD_CDN, WORKING_CDN);
+          // 2. Resolve to NET52.CC
+          try {
+            if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
+            else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, CDN_BASE).href;
+          } catch (e) {
+            if (!fullUrl.startsWith('http')) fullUrl = CDN_BASE + fullUrl.replace(/^\//, '');
           }
+          
+          // Force replacement of bad CDN
+          if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
 
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
-
           if (label === "auto" || label === "master") quality = "1080p (Auto)";
           else if (label.includes("1080") || label.includes("full")) quality = "1080p";
           else if (label.includes("720")) quality = "720p";
@@ -341,10 +338,8 @@ function getStreamingLinks(contentId, title, platform) {
           let fullSubUrl = track.file;
           try {
             if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
-            else if (!fullSubUrl.startsWith('http')) fullSubUrl = `https://${WORKING_CDN}/` + fullSubUrl.replace(/^\//, '');
-            
-            // Fix sub domain too
-            if (fullSubUrl.includes(BAD_CDN)) fullSubUrl = fullSubUrl.replace(BAD_CDN, WORKING_CDN);
+            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, CDN_BASE).href;
+            if (fullSubUrl.includes("net51.cc")) fullSubUrl = fullSubUrl.replace("net51.cc", "net52.cc");
           } catch (e) {}
 
           subtitles.push({
@@ -443,8 +438,9 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // No UA, but correct Referer pointing to the NEW cdn
-                    "Referer": `https://${WORKING_CDN}/`,
+                    // Use okhttp User-Agent to pass player checks
+                    "User-Agent": STREAM_UA,
+                    "Referer": CDN_BASE,
                     "Cookie": "hd=on"
                   }
                 };
