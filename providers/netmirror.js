@@ -18,13 +18,13 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Playback Fix)");
+console.log("[NetMirror] Initializing NetMirror provider (Manifest Fix 23002)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const NETMIRROR_BASE = "https://net51.cc/";
 const DISNEY_BASE = "https://net20.cc/";
 
-// API Headers - Used only for metadata fetching
+// Headers for API calls (metadata/search) - Needs User-Agent
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
   "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36",
@@ -37,7 +37,9 @@ const cookieStore = {
   "https://net51.cc/": { value: "", timestamp: 0 },
   "https://net20.cc/": { value: "", timestamp: 0 }
 };
-const COOKIE_EXPIRY = 54e6; 
+
+// Reduced cookie expiry to 2 hours to prevent stale tokens
+const COOKIE_EXPIRY = 7200000; 
 
 function getBaseUrl(platform) {
   return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
@@ -408,7 +410,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // REMOVED User-Agent to fix 22001 (TLS Mismatch)
+                    // FIXED: REMOVED User-Agent to stop server from returning HTML error pages
                     "Referer": NETMIRROR_BASE,
                     "Cookie": "hd=on"
                   }
