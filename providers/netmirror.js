@@ -18,40 +18,43 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (No-Cache/Fresh Token)");
+console.log("[NetMirror] Initializing NetMirror provider (V6: Net52 + Dalvik)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const NETMIRROR_BASE = "https://net51.cc/";
-const DISNEY_BASE = "https://net20.cc/";
 
-// API Headers: Standard Android Chrome UA to pass Cloudflare on the API side
-const API_HEADERS = {
+// 🔄 UPDATED CDN BASE TO MATCH WORKING LINKS
+const CDN_BASE = "https://net52.cc/"; 
+const API_BASE_DISNEY = "https://net20.cc/";
+const API_BASE_GENERIC = "https://net51.cc/"; // Still used for API auth on non-Disney
+
+// 🤖 FORCE DALVIK USER-AGENT
+// This mimics the CloudStream app signature exactly, preventing the "Bot Token" assignment.
+const ANDROID_UA = "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)";
+
+const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+  "User-Agent": ANDROID_UA,
   "Accept": "application/json, text/plain, */*",
   "Connection": "keep-alive"
 };
 
-// CACHE DISABLED: Force fresh token every time to avoid 23002 on stale tokens
-const cookieStore = {
-  "https://net51.cc/": { value: "", timestamp: 0 },
-  "https://net20.cc/": { value: "", timestamp: 0 }
-};
+// Disable caching to force fresh tokens if the IP rotates or token expires
+// const cookieStore = { ... }; // Removed to ensure freshness
 
-function getBaseUrl(platform) {
-  return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
+function getApiBase(platform) {
+  return platform.toLowerCase() === "disney" ? API_BASE_DISNEY : API_BASE_GENERIC;
 }
 
 function getReferer(platform, isPlaylist = false) {
   if (platform.toLowerCase() === "disney") {
-    return isPlaylist ? DISNEY_BASE : `${DISNEY_BASE}home`;
+    return isPlaylist ? API_BASE_DISNEY : `${API_BASE_DISNEY}home`;
   }
-  return `${NETMIRROR_BASE}tv/home`;
+  return `${API_BASE_GENERIC}tv/home`;
 }
 
 function makeRequest(url, options = {}) {
   return fetch(url, __spreadProps(__spreadValues({}, options), {
-    headers: __spreadValues(__spreadValues({}, API_HEADERS), options.headers),
+    headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
     timeout: 15000
   })).then(function(response) {
     if (!response.ok) {
@@ -68,17 +71,20 @@ function getUnixTime() {
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function bypass(platform) {
-  const targetBase = getBaseUrl(platform);
+  const targetBase = getApiBase(platform);
   
-  // NOTE: We intentionally removed the cache check here.
-  // We want a fresh cookie for every request sequence to ensure the token isn't banned.
-  
+  // No caching check - Always get fresh token
+  console.log(`[NetMirror] Getting fresh token from ${targetBase}...`);
+
   function attemptBypass(attempts) {
     if (attempts >= 3) throw new Error("Max bypass attempts reached");
 
-    return makeRequest(`${targetBase}tv/p.php`, {
+    // Add random timestamp to query to prevent caching
+    const pUrl = `${targetBase}tv/p.php?t=${Date.now()}`;
+
+    return makeRequest(pUrl, {
       method: "POST",
-      headers: __spreadProps(__spreadValues({}, API_HEADERS), {
+      headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
         "Referer": getReferer(platform)
       })
     }).then(function(response) {
@@ -91,9 +97,11 @@ function bypass(platform) {
       }
       return response.text().then(function(responseText) {
         if (!responseText.includes('"r":"n"') && !extractedCookie) {
-          return delay(1000).then(() => attemptBypass(attempts + 1));
+           // Retry
+           return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         if (extractedCookie) {
+          console.log(`[NetMirror] Got Token: ${extractedCookie.substring(0, 10)}...`);
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -104,7 +112,7 @@ function bypass(platform) {
 }
 
 function searchContent(query, platform) {
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
@@ -125,7 +133,7 @@ function searchContent(query, platform) {
 
     return makeRequest(
       `${searchUrl}?s=${encodeURIComponent(query)}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, API_HEADERS), {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
           "Referer": referer
         })
@@ -148,7 +156,7 @@ function searchContent(query, platform) {
 }
 
 function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
@@ -171,7 +179,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     function fetchPage(pageNum) {
       return makeRequest(
         `${episodesUrl}?s=${seasonId}&series=${seriesId}&t=${getUnixTime()}&page=${pageNum}`, {
-          headers: __spreadProps(__spreadValues({}, API_HEADERS), {
+          headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
             "Cookie": cookieString,
             "Referer": referer
           })
@@ -187,7 +195,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
 }
 
 function loadContent(contentId, platform) {
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
@@ -208,7 +216,7 @@ function loadContent(contentId, platform) {
 
     return makeRequest(
       `${postUrl}?id=${contentId}&t=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, API_HEADERS), {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
           "Referer": referer
         })
@@ -249,7 +257,7 @@ function loadContent(contentId, platform) {
 
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
-  const apiBase = getBaseUrl(platform);
+  const apiBase = getApiBase(platform);
   const referer = getReferer(platform, true);
 
   return bypass(platform).then(function(cookie) {
@@ -268,7 +276,7 @@ function getStreamingLinks(contentId, title, platform) {
 
     return makeRequest(
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`, {
-        headers: __spreadProps(__spreadValues({}, API_HEADERS), {
+        headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
           "Referer": referer
         })
@@ -288,22 +296,24 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
 
+          // 1. URL Cleanup
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
 
+          // 2. Base URL Construction
+          // Using CDN_BASE (net52.cc) instead of net51.cc to match working links
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
             else if (!fullUrl.startsWith('http')) {
-              fullUrl = new URL(fullUrl, NETMIRROR_BASE).href;
+              fullUrl = new URL(fullUrl, CDN_BASE).href;
             }
           } catch (e) {
-            if (!fullUrl.startsWith('http')) fullUrl = NETMIRROR_BASE + fullUrl.replace(/^\//, '');
+            if (!fullUrl.startsWith('http')) fullUrl = CDN_BASE + fullUrl.replace(/^\//, '');
           }
 
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
-
           if (label === "auto" || label === "master") quality = "1080p (Auto)";
           else if (label.includes("1080") || label.includes("full")) quality = "1080p";
           else if (label.includes("720")) quality = "720p";
@@ -322,7 +332,7 @@ function getStreamingLinks(contentId, title, platform) {
           let fullSubUrl = track.file;
           try {
             if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
-            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
+            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, CDN_BASE).href;
           } catch (e) {}
 
           subtitles.push({
@@ -421,8 +431,8 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // REMOVED User-Agent to allow player default.
-                    "Referer": NETMIRROR_BASE,
+                    // No User-Agent here: let Player use default
+                    "Referer": CDN_BASE, // Point to net52
                     "Cookie": "hd=on"
                   }
                 };
