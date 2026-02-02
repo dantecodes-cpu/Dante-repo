@@ -18,24 +18,34 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (V8: Origin Fix + OkHttp)");
+console.log("[NetMirror] Initializing NetMirror provider (V9: Dynamic Identity)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🌍 DOMAIN CONFIGURATION
+// 🌍 DOMAIN CONFIGURATION (Updated based on your inspection)
 const API_BASE_DISNEY = "https://net20.cc/";
 const API_BASE_GENERIC = "https://net51.cc/";
-const CDN_BASE = "https://net52.cc/"; // Working CDN
+const CDN_BASE = "https://net52.cc/"; 
 
-// 🤖 USER-AGENTS
-// API_UA: Needs to look like a phone browser to pass Cloudflare/DDoS checks
-const API_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
-// STREAM_UA: Needs to look like a generic player library to avoid TLS mismatch
+// 🎲 DYNAMIC USER-AGENT GENERATOR
+// Randomizes the Chrome version and Build ID to force a fresh token hash from the server.
+function generateUserAgent() {
+    const androidVersions = ["10", "11", "12", "13"];
+    const av = androidVersions[Math.floor(Math.random() * androidVersions.length)];
+    const chromeMajor = Math.floor(Math.random() * (125 - 110 + 1)) + 110; // Random Chrome 110-125
+    const buildId = Math.floor(Math.random() * 1000000);
+    return `Mozilla/5.0 (Linux; Android ${av}; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.0 Mobile Safari/537.36 Build/${buildId}`;
+}
+
+const SESSION_UA = generateUserAgent();
+console.log(`[NetMirror] Session User-Agent: ${SESSION_UA}`);
+
+// Stream UA: Standard OkHttp to pass player checks (mimics Cloudstream)
 const STREAM_UA = "okhttp/4.12.0";
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": API_UA,
+  "User-Agent": SESSION_UA,
   "Accept": "application/json, text/plain, */*",
   "Connection": "keep-alive"
 };
@@ -52,8 +62,8 @@ function getReferer(platform, isPlaylist = false) {
 }
 
 function makeRequest(url, options = {}) {
-  // Add timestamp to prevent caching
-  const finalUrl = url + (url.includes('?') ? '&' : '?') + `_=${Date.now()}`;
+  // Anti-cache param
+  const finalUrl = url + (url.includes('?') ? '&' : '?') + `t=${Date.now()}`;
   
   return fetch(finalUrl, __spreadProps(__spreadValues({}, options), {
     headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
@@ -75,15 +85,13 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function bypass(platform) {
   const targetBase = getApiBase(platform);
-  const referer = getReferer(platform);
-  
-  // NOTE: Added 'Origin' header here which is crucial for POST requests
+  // Remove "Origin" if it causes issues, but usually safer without it for simple bypass
+  // relying on Referer and fresh UA.
   const bypassHeaders = {
-    "Referer": referer,
-    "Origin": targetBase.slice(0, -1) // Remove trailing slash for Origin
+    "Referer": getReferer(platform)
   };
 
-  console.log(`[NetMirror] Generating token on ${targetBase}...`);
+  console.log(`[NetMirror] Authenticating on ${targetBase}...`);
 
   function attemptBypass(attempts) {
     if (attempts >= 3) throw new Error("Max bypass attempts reached");
@@ -104,10 +112,12 @@ function bypass(platform) {
            return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         if (extractedCookie) {
+          // Check for the known bad token prefix (just in case)
           if (extractedCookie.startsWith("d944fd")) {
-             console.log("[NetMirror] Warning: Stale token detected. Retrying...");
-             return delay(1500).then(() => attemptBypass(attempts + 1));
+             console.log("[NetMirror] Token stuck. Retrying with delay...");
+             return delay(2000).then(() => attemptBypass(attempts + 1));
           }
+          console.log(`[NetMirror] Fresh Token: ${extractedCookie.substring(0, 10)}...`);
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -307,7 +317,7 @@ function getStreamingLinks(contentId, title, platform) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
 
-          // 2. Resolve to NET52.CC
+          // 2. Resolve to NET52.CC (FORCE)
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
             else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, CDN_BASE).href;
@@ -315,7 +325,7 @@ function getStreamingLinks(contentId, title, platform) {
             if (!fullUrl.startsWith('http')) fullUrl = CDN_BASE + fullUrl.replace(/^\//, '');
           }
           
-          // Force replacement of bad CDN
+          // CRITICAL: Replace net51 with net52 if found
           if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
 
           let quality = "HD";
@@ -438,9 +448,9 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   quality: source.quality,
                   type: "hls",
                   headers: {
-                    // Use okhttp User-Agent to pass player checks
+                    // Use okhttp UA for playback to match Cloudstream behavior
                     "User-Agent": STREAM_UA,
-                    "Referer": CDN_BASE,
+                    "Referer": CDN_BASE, // net52.cc
                     "Cookie": "hd=on"
                   }
                 };
