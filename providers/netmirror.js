@@ -489,7 +489,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   headers: {
                     "User-Agent": BASE_HEADERS["User-Agent"],
                     "Referer": NETMIRROR_BASE,
-                    "Cookie": "hd=on" // CRITICAL: Added based on Kotlin Interceptor
+                    "Cookie": `hd=on; t_hash_t=${cookie}` // CRITICAL: Added based on Kotlin Interceptor
                   }
                 };
               });
