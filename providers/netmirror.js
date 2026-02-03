@@ -18,35 +18,27 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (V12: Unified Browser Identity)");
+console.log("[NetMirror] Initializing NetMirror provider (V13: Strict Referer & OkHttp)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🌍 DOMAIN: Confirmed as Net52
+// 🌍 FORCE NET52.CC (The working domain)
 const TARGET_DOMAIN = "https://net52.cc/";
 
-// 🛡️ UNIFIED IDENTITY
-// We use ONE User-Agent for both Auth and Streaming.
-// This prevents the "Token Mismatch" error where the server rejects the stream 
-// because the player's UA doesn't match the token's creator UA.
-const UNIFIED_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+// 🤖 IDENTITY: OkHttp
+// We use 'okhttp/4.12.0' for everything. This is what CloudStream uses natively.
+// Using this avoids the "Chrome vs Java" TLS fingerprint mismatch that triggers error 23002.
+const UNIFIED_UA = "okhttp/4.12.0";
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
   "User-Agent": UNIFIED_UA,
   "Accept": "application/json, text/plain, */*",
-  "Connection": "keep-alive",
-  "Origin": "https://net52.cc", // Vital for POST requests
-  "Sec-Fetch-Site": "same-origin",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Dest": "empty"
+  "Connection": "keep-alive"
 };
 
-// No internal caching allowed to ensure fresh tokens
-const cookieStore = {};
-
 function makeRequest(url, options = {}) {
-  // Anti-cache timestamp
+  // Anti-cache param
   const finalUrl = url + (url.includes('?') ? '&' : '?') + `_=${Date.now()}`;
   
   return fetch(finalUrl, __spreadProps(__spreadValues({}, options), {
@@ -76,10 +68,9 @@ function bypass(platform) {
     return makeRequest(`${TARGET_DOMAIN}tv/p.php`, {
       method: "POST",
       headers: {
-        "Referer": `${TARGET_DOMAIN}tv/home`,
-        "Content-Type": "application/x-www-form-urlencoded" // Standard POST content type
-      },
-      body: "" // Empty body is fine for initial auth
+        "Referer": `${TARGET_DOMAIN}tv/home`, // Standard Referer for Auth
+        "Origin": TARGET_DOMAIN.slice(0, -1)
+      }
     }).then(function(response) {
       const setCookieHeader = response.headers.get("set-cookie");
       let extractedCookie = null;
@@ -94,13 +85,12 @@ function bypass(platform) {
         }
         
         if (extractedCookie) {
-          // If we get the known bad token, retry immediately
-          if (extractedCookie.startsWith("d944fd")) {
-             console.log("[NetMirror] Received bad token. Retrying...");
-             return delay(1500).then(() => attemptBypass(attempts + 1));
+          // If token looks stale (starts with d944), force retry
+          if (extractedCookie.startsWith("d944")) {
+             console.log("[NetMirror] Stale token detected. Retrying...");
+             return delay(1000).then(() => attemptBypass(attempts + 1));
           }
-          
-          console.log(`[NetMirror] Valid Token: ${extractedCookie.substring(0, 10)}...`);
+          console.log(`[NetMirror] Fresh Token: ${extractedCookie.substring(0, 10)}...`);
           return extractedCookie;
         }
         throw new Error("Failed to extract authentication cookie");
@@ -117,13 +107,9 @@ function searchContent(query, platform) {
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
       "hd": "on"
     };
-    
-    // Attempt with minimal cookies first (removed hardcoded user_token which might be blacklisted)
-    // If Net51/52 requires user_token, it usually sets it during the homepage visit, 
-    // but the script flow mimics a direct API access. 
-    
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
+
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
-    
     let searchUrl = `${TARGET_DOMAIN}search.php`;
     if (platform.toLowerCase() === "primevideo") searchUrl = `${TARGET_DOMAIN}pv/search.php`;
     else if (platform.toLowerCase() === "disney") searchUrl = `${TARGET_DOMAIN}mobile/hs/search.php`;
@@ -159,6 +145,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
       "hd": "on"
     };
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
     let episodesUrl = `${TARGET_DOMAIN}episodes.php`;
@@ -191,6 +178,7 @@ function loadContent(contentId, platform) {
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
       "hd": "on"
     };
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
 
     let postUrl = `${TARGET_DOMAIN}post.php`;
@@ -247,6 +235,7 @@ function getStreamingLinks(contentId, title, platform) {
       "hd": "on",
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf")
     };
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
 
     let playlistUrl;
@@ -279,16 +268,18 @@ function getStreamingLinks(contentId, title, platform) {
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
-          
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
             else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, TARGET_DOMAIN).href;
           } catch (e) {
             if (!fullUrl.startsWith('http')) fullUrl = TARGET_DOMAIN + fullUrl.replace(/^\//, '');
           }
-          
-          // Ensure it points to net52
           if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
+
+          // 🌟 SPECIFIC REFERER CONSTRUCTION
+          // Instead of generic root, we construct the iframe/player URL.
+          // This often bypasses hotlink protection.
+          const specificReferer = `${TARGET_DOMAIN}play.php?id=${contentId}`;
 
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
@@ -300,7 +291,15 @@ function getStreamingLinks(contentId, title, platform) {
           sources.push({
             url: fullUrl,
             quality: quality,
-            type: source.type || "application/x-mpegURL"
+            type: "hls",
+            headers: {
+              // 1. User-Agent: MUST match the one used in bypass() (okhttp/4.12.0)
+              "User-Agent": UNIFIED_UA,
+              // 2. Referer: Specific 'play.php' page, not just root
+              "Referer": specificReferer,
+              // 3. Cookie: hd=on is essential
+              "Cookie": "hd=on"
+            }
           });
         });
       }
@@ -340,7 +339,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
 
     let platforms = ["netflix", "primevideo", "disney"];
     const tLower = title.toLowerCase();
-    
     if (tLower.includes("boys") || tLower.includes("prime") || tLower.includes("reacher")) {
       platforms = ["primevideo", "netflix", "disney"];
     } else if (tLower.includes("mandalorian") || tLower.includes("marvel") || tLower.includes("iron") || tLower.includes("star wars") || tLower.includes("bad batch")) {
@@ -378,7 +376,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           }
 
           const selectedContent = relevantResults[0];
-          console.log(`[NetMirror] Selected: ${selectedContent.title} on ${platform}`);
+          console.log(`[NetMirror] Selected: ${selectedContent.title} (ID: ${selectedContent.id}) on ${platform}`);
 
           return loadContent(selectedContent.id, platform).then(function(contentData) {
             let targetId = contentData.id;
@@ -408,14 +406,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   url: source.url,
                   quality: source.quality,
                   type: "hls",
-                  headers: {
-                    // 🚀 CRITICAL: Use the EXACT SAME User-Agent for playback
-                    // as we used for Auth. The server likely hashes the UA into the token.
-                    // Also point Referer to Net52.
-                    "User-Agent": UNIFIED_UA,
-                    "Referer": TARGET_DOMAIN,
-                    "Cookie": "hd=on"
-                  }
+                  headers: source.headers // Inherit from helper
                 };
               });
 
