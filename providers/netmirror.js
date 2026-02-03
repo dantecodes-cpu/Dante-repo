@@ -18,17 +18,17 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (V13: Strict Referer & OkHttp)");
+console.log("[NetMirror] Initializing NetMirror provider (V14: Browser XHR Mode)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🌍 FORCE NET52.CC (The working domain)
+// 🌍 FORCE NET52.CC
 const TARGET_DOMAIN = "https://net52.cc/";
 
-// 🤖 IDENTITY: OkHttp
-// We use 'okhttp/4.12.0' for everything. This is what CloudStream uses natively.
-// Using this avoids the "Chrome vs Java" TLS fingerprint mismatch that triggers error 23002.
-const UNIFIED_UA = "okhttp/4.12.0";
+// 🛡️ UNIFIED BROWSER IDENTITY
+// We simulate a specific version of Chrome on Android.
+// This UA is used for Auth, API, AND Streaming to prevent "Token Mismatch".
+const UNIFIED_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -38,7 +38,7 @@ const BASE_HEADERS = {
 };
 
 function makeRequest(url, options = {}) {
-  // Anti-cache param
+  // Anti-cache param to ensure fresh responses
   const finalUrl = url + (url.includes('?') ? '&' : '?') + `_=${Date.now()}`;
   
   return fetch(finalUrl, __spreadProps(__spreadValues({}, options), {
@@ -68,9 +68,11 @@ function bypass(platform) {
     return makeRequest(`${TARGET_DOMAIN}tv/p.php`, {
       method: "POST",
       headers: {
-        "Referer": `${TARGET_DOMAIN}tv/home`, // Standard Referer for Auth
-        "Origin": TARGET_DOMAIN.slice(0, -1)
-      }
+        "Referer": `${TARGET_DOMAIN}tv/home`,
+        "Origin": TARGET_DOMAIN.slice(0, -1),
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: ""
     }).then(function(response) {
       const setCookieHeader = response.headers.get("set-cookie");
       let extractedCookie = null;
@@ -85,7 +87,7 @@ function bypass(platform) {
         }
         
         if (extractedCookie) {
-          // If token looks stale (starts with d944), force retry
+          // Retry if we get the "known bad" token prefix (d944)
           if (extractedCookie.startsWith("d944")) {
              console.log("[NetMirror] Stale token detected. Retrying...");
              return delay(1000).then(() => attemptBypass(attempts + 1));
@@ -276,10 +278,13 @@ function getStreamingLinks(contentId, title, platform) {
           }
           if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
 
-          // 🌟 SPECIFIC REFERER CONSTRUCTION
-          // Instead of generic root, we construct the iframe/player URL.
-          // This often bypasses hotlink protection.
-          const specificReferer = `${TARGET_DOMAIN}play.php?id=${contentId}`;
+          // Specific Player Page Referer
+          // This matches how the browser sees the request: coming from the player iframe
+          const playerReferer = `${TARGET_DOMAIN}play.php?id=${contentId}`;
+
+          // Construct the full cookie string for playback
+          // We include the AUTH cookie (t_hash_t) because severe security often requires it.
+          const playbackCookie = `t_hash_t=${cookie}; hd=on`;
 
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
@@ -293,12 +298,15 @@ function getStreamingLinks(contentId, title, platform) {
             quality: quality,
             type: "hls",
             headers: {
-              // 1. User-Agent: MUST match the one used in bypass() (okhttp/4.12.0)
+              // 🚀 HEADERS TO MIMIC BROWSER XHR 🚀
+              // 1. Same UA as Auth
               "User-Agent": UNIFIED_UA,
-              // 2. Referer: Specific 'play.php' page, not just root
-              "Referer": specificReferer,
-              // 3. Cookie: hd=on is essential
-              "Cookie": "hd=on"
+              // 2. Point to the specific player page
+              "Referer": playerReferer,
+              // 3. Send FULL cookies (Auth + HD)
+              "Cookie": playbackCookie,
+              // 4. Pretend to be an AJAX request (key for blob/hls.js handling)
+              "X-Requested-With": "XMLHttpRequest"
             }
           });
         });
@@ -406,7 +414,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   url: source.url,
                   quality: source.quality,
                   type: "hls",
-                  headers: source.headers // Inherit from helper
+                  headers: source.headers
                 };
               });
 
