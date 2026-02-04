@@ -18,16 +18,11 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Updated for Net52)");
+console.log("[NetMirror] Initializing NetMirror provider (Disney Fix v3)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-
-// --- CHANGELOG: Updated Domains ---
-const NETMIRROR_BASE = "https://net52.cc/"; 
-const DISNEY_BASE = "https://net22.cc/"; // Rotated from net20.cc
-
-// --- CHANGELOG: New Static User Token ---
-const USER_TOKEN = "e362149021200003b137f8280f55098e"; 
+const NETMIRROR_BASE = "https://net51.cc/";
+const DISNEY_BASE = "https://net20.cc/";
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -37,10 +32,10 @@ const BASE_HEADERS = {
   "Connection": "keep-alive"
 };
 
-// Cookie jar
+// Store cookies per domain to prevent cross-contamination
 const cookieStore = {
-  "https://net52.cc/": { value: "", timestamp: 0 },
-  "https://net22.cc/": { value: "", timestamp: 0 }
+  "https://net51.cc/": { value: "", timestamp: 0 },
+  "https://net20.cc/": { value: "", timestamp: 0 }
 };
 const COOKIE_EXPIRY = 54e6; 
 
@@ -49,11 +44,12 @@ function getBaseUrl(platform) {
 }
 
 function getReferer(platform, isPlaylist = false) {
-  const base = getBaseUrl(platform);
   if (platform.toLowerCase() === "disney") {
-    return isPlaylist ? base : `${base}home`;
+    // Disney Playlist requires root referer (net20.cc/)
+    // Disney Search/Post requires home referer (net20.cc/home)
+    return isPlaylist ? DISNEY_BASE : `${DISNEY_BASE}home`;
   }
-  return `${base}tv/home`;
+  return `${NETMIRROR_BASE}tv/home`;
 }
 
 function makeRequest(url, options = {}) {
@@ -74,18 +70,9 @@ function getUnixTime() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- CHANGELOG: New Bypass Logic (GET api/c.php) ---
 function bypass(platform) {
   const targetBase = getBaseUrl(platform);
   const now = Date.now();
-
-  // Clear old domain cookies if they exist
-  if (cookieStore["https://net51.cc/"]) delete cookieStore["https://net51.cc/"];
-
-  if (!cookieStore[targetBase]) {
-      cookieStore[targetBase] = { value: "", timestamp: 0 };
-  }
-  
   const cached = cookieStore[targetBase];
 
   if (cached.value && cached.timestamp && now - cached.timestamp < COOKIE_EXPIRY) {
@@ -99,36 +86,37 @@ function bypass(platform) {
       throw new Error("Max bypass attempts reached");
     }
 
-    // New API Endpoint for Auth
-    let authUrl;
-    if (platform.toLowerCase() === "disney") {
-        authUrl = `${targetBase}mobile/hs/api/c.php`;
-    } else {
-        authUrl = `${targetBase}tv/api/c.php`;
-    }
-
-    return makeRequest(`${authUrl}?t=${getUnixTime()}`, {
-      method: "GET", // Changed from POST
+    return makeRequest(`${targetBase}tv/p.php`, {
+      method: "POST",
       headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
         "Referer": getReferer(platform)
       })
     }).then(function(response) {
+      const setCookieHeader = response.headers.get("set-cookie");
+      let extractedCookie = null;
+      if (setCookieHeader) {
+        const cookieString = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
+        const cookieMatch = cookieString.match(/t_hash_t=([^;]+)/);
+        if (cookieMatch) {
+          extractedCookie = cookieMatch[1];
+        }
+      }
       return response.text().then(function(responseText) {
-        // The new API returns the hash directly in the body
-        const extractedCookie = responseText.trim();
-        
-        // Validation: Ensure it's not an HTML error page or JSON
-        if (!extractedCookie || extractedCookie.length < 5 || extractedCookie.includes("<") || extractedCookie.includes("{")) {
-          console.log(`[NetMirror] Bypass attempt ${attempts + 1} failed (Invalid Token). Retrying...`);
+        // Validation: Check for "r":"n" OR if we successfully got a cookie header
+        if (!responseText.includes('"r":"n"') && !extractedCookie) {
+          console.log(`[NetMirror] Bypass attempt ${attempts + 1} failed. Retrying...`);
           return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         
-        cookieStore[targetBase] = {
-          value: extractedCookie,
-          timestamp: Date.now()
-        };
-        console.log(`[NetMirror] Authentication successful for ${platform}`);
-        return extractedCookie;
+        if (extractedCookie) {
+          cookieStore[targetBase] = {
+            value: extractedCookie,
+            timestamp: Date.now()
+          };
+          console.log(`[NetMirror] Authentication successful for ${platform}`);
+          return extractedCookie;
+        }
+        throw new Error("Failed to extract authentication cookie");
       });
     });
   }
@@ -140,14 +128,17 @@ function searchContent(query, platform) {
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
-    // --- CHANGELOG: Added user_token to cookies ---
     const cookies = {
       "t_hash_t": cookie,
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
-      "hd": "on",
-      "user_token": USER_TOKEN
+      "hd": "on"
     };
     
+    // STRICT: No user_token for Disney (Matches Kotlin)
+    if (platform.toLowerCase() !== "disney") {
+      cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
+    }
+
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
 
     const searchEndpoints = {
@@ -190,9 +181,9 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     const cookies = {
       "t_hash_t": cookie,
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
-      "hd": "on",
-      "user_token": USER_TOKEN
+      "hd": "on"
     };
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const episodes = [];
@@ -237,9 +228,9 @@ function loadContent(contentId, platform) {
     const cookies = {
       "t_hash_t": cookie,
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
-      "hd": "on",
-      "user_token": USER_TOKEN
+      "hd": "on"
     };
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
 
@@ -301,15 +292,16 @@ function loadContent(contentId, platform) {
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const apiBase = getBaseUrl(platform);
+  // Important: HS uses root as referer for playlist
   const referer = getReferer(platform, true);
 
   return bypass(platform).then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
       "hd": "on",
-      "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
-      "user_token": USER_TOKEN
+      "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf")
     };
+    if (platform.toLowerCase() !== "disney") cookies["user_token"] = "a0a5f663894ade410614071fe46baca6";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     let playlistUrl;
@@ -341,12 +333,12 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
 
-          // --- CHANGELOG: Force correct domain in streams ---
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
-             // Replace any old net51 refs with current base
-             fullUrl = fullUrl.replace(/:\/\/net\d+\.cc\/tv\//, `://${new URL(NETMIRROR_BASE).hostname}/`).replace(/^\/tv\//, "/");
+            fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
           }
 
+          // Force NETMIRROR_BASE (net51) for streams even if API is Disney (net20)
+          // Matches Kotlin: newUrl = "https://net51.cc"
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
             else if (!fullUrl.startsWith('http')) {
@@ -409,6 +401,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     let platforms = ["netflix", "primevideo", "disney"];
     const tLower = title.toLowerCase();
     
+    // Priority Heuristics
     if (tLower.includes("boys") || tLower.includes("prime") || tLower.includes("reacher")) {
       platforms = ["primevideo", "netflix", "disney"];
     } else if (tLower.includes("mandalorian") || tLower.includes("marvel") || tLower.includes("iron") || tLower.includes("star wars") || tLower.includes("bad batch")) {
@@ -419,6 +412,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       const s1 = str1.toLowerCase().trim();
       const s2 = str2.toLowerCase().trim();
       if (s1 === s2) return 1;
+      // Lenient check for Disney titles which often have prefixes
       return s1.includes(s2) || s2.includes(s1) ? 0.8 : 0; 
     }
 
@@ -456,7 +450,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
             let targetContentId = contentData.id;
             
             if (mediaType === "tv") {
-              if(contentData.isMovie) return null; 
+              if(contentData.isMovie) return null; // Type mismatch
 
               const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
               const episodeData = validEpisodes.find((ep) => {
@@ -495,7 +489,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   headers: {
                     "User-Agent": BASE_HEADERS["User-Agent"],
                     "Referer": NETMIRROR_BASE,
-                    "Cookie": "hd=on" 
+                    "Cookie": "hd=on" // CRITICAL: Added based on Kotlin Interceptor
                   }
                 };
               });
@@ -518,6 +512,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
 
       return trySearch(false).then(function(result) {
         if (result) return result;
+        // Fallback to next platform if null
         return tryPlatform(platformIndex + 1);
       }).catch(e => {
         console.error(`Error on ${platform}:`, e);
@@ -539,4 +534,3 @@ if (typeof module !== "undefined" && module.exports) {
 } else {
   global.getStreams = getStreams;
 }
-```[[1](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQGYdOQg8G7Or6eSOsN1Yvj2bCmxSDqt9goFX_pgC_1FX_AzrhelZKDrS2q51edbGHYQrd10l4MIwK-QaA8MGEL_yNKONNB_CJWsQUxzF5V9hoPH0-cKDbug1elOeWl49MUJEjUjfBH_ZomJdjSyfBgIFHQ4CYvuAzt85ZUWM21BdAN1YwkXrCoH4f2y-o1o1oyw8HT9Tis7PsW8S8agnmHgdj9xboffCnILjvbFp4Eiwfi_h_f-Qtk1ZMFTiXQ%3D)][[2](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQEnDY8QhQBepU_IedktqlTk3d3YaEmwX8tzXeEmwzHcvj28NtGx0WeKziOPFB3M0KcGpUsk7cq6VCuW1Nj5mzPjNslhU7DFz2zBy5u5Vx9bJCe8Ci9C1SJO_wp64QKL78H87lO4b7GegzSH_JPRfeH8J6tFsrBSvc10nclMEO1pEw%3D%3D)][[5](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQEQHtATYK5O1aIxqCRy3itUsBofi8qMwfjaVqB0f4USFjaYpujZ6EaqkTVfzb9uJc1x3Tx8xf0HkKI6OGgSLoWSjjbJ-FJ1TlwyZKa_Iz4n9VJdY9T1-IlRP5c5giiuH3VfHvar3MvjPojFM3o7r4WpQ3X7JO0QgSH3nBrPS2s9lg%3D%3D)]
