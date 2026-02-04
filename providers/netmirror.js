@@ -18,16 +18,18 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Final Deployment v9)");
+console.log("[NetMirror] Initializing NetMirror provider (V10 - Deployment Ready)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 1. DOMAINS (Confirmed Working)
+// --- CONFIGURATION ---
 const NETMIRROR_BASE = "https://net52.cc/"; 
 const DISNEY_BASE = "https://net22.cc/";
 
-// 2. MASTER KEY (Confirmed Working)
+// Master Key (Verified Working)
 const MASTER_HASH = "988a734da1152ddea2c25c8904eede20%3A%3A0cb4f3935641c828678b8946867997e5%3A%3A1768993531%3A%3Ani";
+// User Token (Added for Disney/Cloudstream compatibility)
+const USER_TOKEN = "e362149021200003b137f8280f55098e"; 
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -47,14 +49,15 @@ function getBaseUrl(platform) {
   return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
 }
 
-// 3. REFERER LOGIC (Fixed for Disney)
+// FIX: Strict Referer Logic
 function getReferer(platform, isPlaylist = false) {
   const base = getBaseUrl(platform);
   if (platform.toLowerCase() === "disney") {
-    // Disney Search/Post requires /home
-    // Disney Playlist requires Root /
-    return isPlaylist ? base : `${base}home`;
+    // Disney Mobile API (hs) STRICTLY requires Root referer for Search/Playlist
+    // Using /home causes Search to return 0 results
+    return base; 
   }
+  // Netflix/Prime TV API expects /tv/home
   return `${base}tv/home`;
 }
 
@@ -80,6 +83,7 @@ function bypass(platform) {
   const targetBase = getBaseUrl(platform);
   const now = Date.now();
 
+  // Cleanup old cookies
   if (cookieStore["https://net51.cc/"]) delete cookieStore["https://net51.cc/"];
   if (cookieStore["https://net20.cc/"]) delete cookieStore["https://net20.cc/"];
 
@@ -104,12 +108,11 @@ function bypass(platform) {
         authUrl = `${targetBase}tv/p.php`;
     }
 
-    // Auth requests usually use the standard referer
     return makeRequest(authUrl, {
       method: "POST",
       headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
         "Content-Type": "application/x-www-form-urlencoded",
-        "Referer": getReferer(platform, false)
+        "Referer": getReferer(platform) // Use correct referer
       }),
       body: "init=1"
     }).then(function(response) {
@@ -141,13 +144,14 @@ function bypass(platform) {
 
 function getFullCookie(platform, dynamicHash) {
     const ott = platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf");
-    return `t_hash_t=${MASTER_HASH}; t_hash=${dynamicHash}; ott=${ott}; hd=on`;
+    // Added user_token for compatibility
+    return `t_hash_t=${MASTER_HASH}; t_hash=${dynamicHash}; ott=${ott}; hd=on; user_token=${USER_TOKEN}`;
 }
 
 function searchContent(query, platform) {
   const apiBase = getBaseUrl(platform);
-  // Search requires standard referer (home)
-  const referer = getReferer(platform, false);
+  // FIX: Disney Search needs Root Referer
+  const referer = getReferer(platform);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -186,7 +190,7 @@ function searchContent(query, platform) {
 
 function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const apiBase = getBaseUrl(platform);
-  const referer = getReferer(platform, false);
+  const referer = getReferer(platform);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -226,7 +230,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
 
 function loadContent(contentId, platform) {
   const apiBase = getBaseUrl(platform);
-  const referer = getReferer(platform, false);
+  const referer = getReferer(platform);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -289,7 +293,6 @@ function loadContent(contentId, platform) {
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const apiBase = getBaseUrl(platform);
-  // Important: Use correct referer for playlist generation (Root for Disney, TV/Home for others)
   const referer = getReferer(platform, true);
 
   return bypass(platform).then(function(dynamicHash) {
@@ -321,30 +324,24 @@ function getStreamingLinks(contentId, title, platform) {
           item.sources.forEach((source) => {
             let fullUrl = source.file;
 
-            // --- URL NORMALIZATION FIX ---
+            // FIX: Absolute URL conversion + Domain Rewrite
             try {
-                // 1. Handle Protocol relative //
                 if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-                
-                // 2. Handle Root relative (e.g. /tv/hls/...)
                 else if (!fullUrl.startsWith('http')) {
-                    // Combine Base + Relative path
+                    // Handle relative paths like /tv/hls/123.m3u8
                     fullUrl = new URL(fullUrl, apiBase).href;
                 }
 
-                // 3. Domain Normalization (Auth Domain must match Stream Domain)
-                // If we authenticated on net52.cc but link is net51.cc, we must use net52.cc
+                // Rewrite domain to match Auth (Fixes Manifest Malformed)
                 const urlObj = new URL(fullUrl);
                 const currentBaseObj = new URL(apiBase);
-
                 if (urlObj.hostname !== currentBaseObj.hostname) {
                     fullUrl = fullUrl.replace(urlObj.hostname, currentBaseObj.hostname);
                 }
             } catch (e) {
-                console.log("[NetMirror] URL parsing error, fallback rewrite.");
+                // Safe Fallback
                 if(apiBase.includes("net52") && fullUrl.includes("net51")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
             }
-            // -----------------------------
 
             let quality = "HD";
             let label = (source.label || "").toLowerCase();
@@ -361,7 +358,7 @@ function getStreamingLinks(contentId, title, platform) {
               headers: {
                 "User-Agent": BASE_HEADERS["User-Agent"],
                 "Referer": referer,
-                "Cookie": cookieString // CRITICAL: Pass cookies to video player
+                "Cookie": cookieString
               }
             });
           });
@@ -373,11 +370,9 @@ function getStreamingLinks(contentId, title, platform) {
             try {
               if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
               else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
-              
-               // Rewrite domain for subs too
-               if (fullSubUrl.includes("net51")) fullSubUrl = fullSubUrl.replace("net51.cc", new URL(NETMIRROR_BASE).hostname);
-               if (fullSubUrl.includes("net20")) fullSubUrl = fullSubUrl.replace("net20.cc", new URL(DISNEY_BASE).hostname);
-               
+               // Domain fix for subs
+               if (fullSubUrl.includes("net51")) fullSubUrl = fullSubUrl.replace("net51.cc", "net52.cc");
+               if (fullSubUrl.includes("net20")) fullSubUrl = fullSubUrl.replace("net20.cc", "net22.cc");
             } catch (e) {}
 
             subtitles.push({
@@ -492,7 +487,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   url: source.url,
                   quality: source.quality,
                   type: "hls",
-                  headers: source.headers // Inherit generated headers
+                  headers: source.headers // Inherit headers with cookies
                 };
               });
 
