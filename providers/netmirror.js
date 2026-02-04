@@ -18,20 +18,20 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Final Fix - Termux Verified)");
+console.log("[NetMirror] Initializing NetMirror provider (Final Deployment v9)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 1. DOMAINS (Verified Working)
+// 1. DOMAINS (Confirmed Working)
 const NETMIRROR_BASE = "https://net52.cc/"; 
 const DISNEY_BASE = "https://net22.cc/";
 
-// 2. MASTER KEY (Verified in Termux)
+// 2. MASTER KEY (Confirmed Working)
 const MASTER_HASH = "988a734da1152ddea2c25c8904eede20%3A%3A0cb4f3935641c828678b8946867997e5%3A%3A1768993531%3A%3Ani";
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36", // Updated to match debug script
+  "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36",
   "Accept": "application/json, text/plain, */*",
   "Accept-Language": "en-US,en;q=0.5",
   "Connection": "keep-alive"
@@ -47,9 +47,15 @@ function getBaseUrl(platform) {
   return platform.toLowerCase() === "disney" ? DISNEY_BASE : NETMIRROR_BASE;
 }
 
-// 3. REFERER (Matched to Debug Script)
-function getReferer(platform) {
-  return getBaseUrl(platform); // Simply return the root domain (e.g. https://net52.cc/)
+// 3. REFERER LOGIC (Fixed for Disney)
+function getReferer(platform, isPlaylist = false) {
+  const base = getBaseUrl(platform);
+  if (platform.toLowerCase() === "disney") {
+    // Disney Search/Post requires /home
+    // Disney Playlist requires Root /
+    return isPlaylist ? base : `${base}home`;
+  }
+  return `${base}tv/home`;
 }
 
 function makeRequest(url, options = {}) {
@@ -70,13 +76,12 @@ function getUnixTime() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// 4. BYPASS LOGIC (Reverted to POST + init=1 based on Termux success)
 function bypass(platform) {
   const targetBase = getBaseUrl(platform);
   const now = Date.now();
 
-  // Cleanup old domains
   if (cookieStore["https://net51.cc/"]) delete cookieStore["https://net51.cc/"];
+  if (cookieStore["https://net20.cc/"]) delete cookieStore["https://net20.cc/"];
 
   if (!cookieStore[targetBase]) {
       cookieStore[targetBase] = { value: "", timestamp: 0 };
@@ -87,12 +92,11 @@ function bypass(platform) {
     return Promise.resolve(cached.value);
   }
 
-  console.log(`[NetMirror] Authenticating with ${targetBase}...`);
+  console.log(`[NetMirror] Authenticating on ${targetBase}...`);
 
   function attemptBypass(attempts) {
     if (attempts >= 3) throw new Error("Max auth attempts reached");
 
-    // Endpoint selection
     let authUrl;
     if (platform.toLowerCase() === "disney") {
         authUrl = `${targetBase}mobile/hs/p.php`;
@@ -100,11 +104,12 @@ function bypass(platform) {
         authUrl = `${targetBase}tv/p.php`;
     }
 
+    // Auth requests usually use the standard referer
     return makeRequest(authUrl, {
       method: "POST",
       headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
         "Content-Type": "application/x-www-form-urlencoded",
-        "Referer": getReferer(platform)
+        "Referer": getReferer(platform, false)
       }),
       body: "init=1"
     }).then(function(response) {
@@ -118,7 +123,7 @@ function bypass(platform) {
       }
 
       if (!tHash) {
-         console.log(`[NetMirror] Auth failed (No t_hash). Retrying...`);
+         console.log(`[NetMirror] Auth failed. Retrying...`);
          return delay(1000).then(() => attemptBypass(attempts + 1));
       }
       
@@ -127,14 +132,13 @@ function bypass(platform) {
         timestamp: Date.now()
       };
       
-      console.log(`[NetMirror] Auth successful. t_hash found.`);
+      console.log(`[NetMirror] Auth successful.`);
       return tHash;
     });
   }
   return attemptBypass(0);
 }
 
-// 5. COOKIE CONSTRUCTION (Matches Termux: Master Key + Dynamic Key + OTT)
 function getFullCookie(platform, dynamicHash) {
     const ott = platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf");
     return `t_hash_t=${MASTER_HASH}; t_hash=${dynamicHash}; ott=${ott}; hd=on`;
@@ -142,7 +146,8 @@ function getFullCookie(platform, dynamicHash) {
 
 function searchContent(query, platform) {
   const apiBase = getBaseUrl(platform);
-  const referer = getReferer(platform);
+  // Search requires standard referer (home)
+  const referer = getReferer(platform, false);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -181,7 +186,7 @@ function searchContent(query, platform) {
 
 function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const apiBase = getBaseUrl(platform);
-  const referer = getReferer(platform);
+  const referer = getReferer(platform, false);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -221,7 +226,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
 
 function loadContent(contentId, platform) {
   const apiBase = getBaseUrl(platform);
-  const referer = getReferer(platform);
+  const referer = getReferer(platform, false);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -284,7 +289,8 @@ function loadContent(contentId, platform) {
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const apiBase = getBaseUrl(platform);
-  const referer = getReferer(platform);
+  // Important: Use correct referer for playlist generation (Root for Disney, TV/Home for others)
+  const referer = getReferer(platform, true);
 
   return bypass(platform).then(function(dynamicHash) {
     const cookieString = getFullCookie(platform, dynamicHash);
@@ -301,67 +307,90 @@ function getStreamingLinks(contentId, title, platform) {
           "Referer": referer
         })
       }
-    );
-  }).then(r => r.json()).then(function(playlist) {
-    if (!Array.isArray(playlist) || playlist.length === 0) {
-      console.log("[NetMirror] No streaming links found");
-      return { sources: [], subtitles: [] };
-    }
+    ).then(r => r.json()).then(function(playlist) {
+      if (!Array.isArray(playlist) || playlist.length === 0) {
+        console.log("[NetMirror] No streaming links found");
+        return { sources: [], subtitles: [] };
+      }
 
-    const sources = [];
-    const subtitles = [];
+      const sources = [];
+      const subtitles = [];
 
-    playlist.forEach((item) => {
-      if (item.sources) {
-        item.sources.forEach((source) => {
-          let fullUrl = source.file;
+      playlist.forEach((item) => {
+        if (item.sources) {
+          item.sources.forEach((source) => {
+            let fullUrl = source.file;
 
-          // Ensure proper scheme and domain
-          if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", new URL(NETMIRROR_BASE).hostname);
-          
-          try {
-            if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-            else if (!fullUrl.startsWith('http')) {
-              fullUrl = new URL(fullUrl, NETMIRROR_BASE).href;
+            // --- URL NORMALIZATION FIX ---
+            try {
+                // 1. Handle Protocol relative //
+                if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
+                
+                // 2. Handle Root relative (e.g. /tv/hls/...)
+                else if (!fullUrl.startsWith('http')) {
+                    // Combine Base + Relative path
+                    fullUrl = new URL(fullUrl, apiBase).href;
+                }
+
+                // 3. Domain Normalization (Auth Domain must match Stream Domain)
+                // If we authenticated on net52.cc but link is net51.cc, we must use net52.cc
+                const urlObj = new URL(fullUrl);
+                const currentBaseObj = new URL(apiBase);
+
+                if (urlObj.hostname !== currentBaseObj.hostname) {
+                    fullUrl = fullUrl.replace(urlObj.hostname, currentBaseObj.hostname);
+                }
+            } catch (e) {
+                console.log("[NetMirror] URL parsing error, fallback rewrite.");
+                if(apiBase.includes("net52") && fullUrl.includes("net51")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
             }
-          } catch (e) {
-            if (!fullUrl.startsWith('http')) fullUrl = NETMIRROR_BASE + fullUrl.replace(/^\//, '');
-          }
+            // -----------------------------
 
-          let quality = "HD";
-          let label = (source.label || "").toLowerCase();
+            let quality = "HD";
+            let label = (source.label || "").toLowerCase();
 
-          if (label === "auto" || label === "master") quality = "1080p (Auto)";
-          else if (label.includes("1080") || label.includes("full")) quality = "1080p";
-          else if (label.includes("720")) quality = "720p";
-          else if (label.includes("480")) quality = "480p";
+            if (label === "auto" || label === "master") quality = "1080p (Auto)";
+            else if (label.includes("1080") || label.includes("full")) quality = "1080p";
+            else if (label.includes("720")) quality = "720p";
+            else if (label.includes("480")) quality = "480p";
 
-          sources.push({
-            url: fullUrl,
-            quality: quality,
-            type: source.type || "application/x-mpegURL"
+            sources.push({
+              url: fullUrl,
+              quality: quality,
+              type: source.type || "application/x-mpegURL",
+              headers: {
+                "User-Agent": BASE_HEADERS["User-Agent"],
+                "Referer": referer,
+                "Cookie": cookieString // CRITICAL: Pass cookies to video player
+              }
+            });
           });
-        });
-      }
+        }
 
-      if (item.tracks) {
-        item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
-          let fullSubUrl = track.file;
-          try {
-            if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
-            else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
-          } catch (e) {}
+        if (item.tracks) {
+          item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
+            let fullSubUrl = track.file;
+            try {
+              if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
+              else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
+              
+               // Rewrite domain for subs too
+               if (fullSubUrl.includes("net51")) fullSubUrl = fullSubUrl.replace("net51.cc", new URL(NETMIRROR_BASE).hostname);
+               if (fullSubUrl.includes("net20")) fullSubUrl = fullSubUrl.replace("net20.cc", new URL(DISNEY_BASE).hostname);
+               
+            } catch (e) {}
 
-          subtitles.push({
-            url: fullSubUrl,
-            language: track.label || "English"
+            subtitles.push({
+              url: fullSubUrl,
+              language: track.label || "English"
+            });
           });
-        });
-      }
+        }
+      });
+
+      console.log(`[NetMirror] Found ${sources.length} sources.`);
+      return { sources, subtitles };
     });
-
-    console.log(`[NetMirror] Found ${sources.length} sources.`);
-    return { sources, subtitles };
   });
 }
 
@@ -463,11 +492,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   url: source.url,
                   quality: source.quality,
                   type: "hls",
-                  headers: {
-                    "User-Agent": BASE_HEADERS["User-Agent"],
-                    "Referer": NETMIRROR_BASE,
-                    "Cookie": "hd=on" 
-                  }
+                  headers: source.headers // Inherit generated headers
                 };
               });
 
