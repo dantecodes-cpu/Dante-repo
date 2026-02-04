@@ -18,16 +18,15 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (V14: Browser XHR Mode)");
+console.log("[NetMirror] Initializing NetMirror provider (V15: iosmirror.cc)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🌍 FORCE NET52.CC
-const TARGET_DOMAIN = "https://net52.cc/";
+// 🌍 FORCE IOSMIRROR.CC (Updated from net52.cc)
+const TARGET_DOMAIN = "https://iosmirror.cc/";
 
 // 🛡️ UNIFIED BROWSER IDENTITY
 // We simulate a specific version of Chrome on Android.
-// This UA is used for Auth, API, AND Streaming to prevent "Token Mismatch".
 const UNIFIED_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
 const BASE_HEADERS = {
@@ -266,24 +265,27 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
 
-          // Cleanup and Force Net52
+          // Cleanup and Force iosmirror (replacing net52.cc and net51.cc)
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
-            fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
+             fullUrl = fullUrl.replace(/:\/\/net5[0-9]\.cc\/tv\//, "://iosmirror.cc/").replace(/^\/tv\//, "/");
           }
+          
           try {
             if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
             else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, TARGET_DOMAIN).href;
           } catch (e) {
             if (!fullUrl.startsWith('http')) fullUrl = TARGET_DOMAIN + fullUrl.replace(/^\//, '');
           }
-          if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "net52.cc");
+          
+          // Domain replacement logic for stability
+          if (fullUrl.includes("net51.cc")) fullUrl = fullUrl.replace("net51.cc", "iosmirror.cc");
+          if (fullUrl.includes("net52.cc")) fullUrl = fullUrl.replace("net52.cc", "iosmirror.cc");
 
           // Specific Player Page Referer
           // This matches how the browser sees the request: coming from the player iframe
           const playerReferer = `${TARGET_DOMAIN}play.php?id=${contentId}`;
 
           // Construct the full cookie string for playback
-          // We include the AUTH cookie (t_hash_t) because severe security often requires it.
           const playbackCookie = `t_hash_t=${cookie}; hd=on`;
 
           let quality = "HD";
@@ -305,7 +307,7 @@ function getStreamingLinks(contentId, title, platform) {
               "Referer": playerReferer,
               // 3. Send FULL cookies (Auth + HD)
               "Cookie": playbackCookie,
-              // 4. Pretend to be an AJAX request (key for blob/hls.js handling)
+              // 4. Pretend to be an AJAX request
               "X-Requested-With": "XMLHttpRequest"
             }
           });
@@ -318,7 +320,10 @@ function getStreamingLinks(contentId, title, platform) {
           try {
             if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
             else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, TARGET_DOMAIN).href;
-            if (fullSubUrl.includes("net51.cc")) fullSubUrl = fullSubUrl.replace("net51.cc", "net52.cc");
+            
+            // Subtitle domain fix
+            if (fullSubUrl.includes("net51.cc")) fullSubUrl = fullSubUrl.replace("net51.cc", "iosmirror.cc");
+            if (fullSubUrl.includes("net52.cc")) fullSubUrl = fullSubUrl.replace("net52.cc", "iosmirror.cc");
           } catch (e) {}
 
           subtitles.push({
