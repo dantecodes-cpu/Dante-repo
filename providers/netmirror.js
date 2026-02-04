@@ -18,19 +18,17 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing Provider (V12 - Kotlin Parity)");
+console.log("[NetMirror] Initializing NetMirror Provider (V14 - Termux Verified)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// --- CONFIGURATION BASED ON KOTLIN ---
-// Kotlin: mainUrl = "https://net22.cc" (For Search, Load, Auth)
-// Kotlin: newUrl  = "https://net52.cc" (For Playlists, Streams)
-const META_BASE = "https://net22.cc/"; 
-const STREAM_BASE = "https://net52.cc/"; 
+// --- CONFIGURATION ---
+const META_BASE = "https://net22.cc/";   // Auth, Search, Details
+const STREAM_BASE = "https://net52.cc";  // Playlists, Streams (No trailing slash for easier appending)
 
-// Hashes from CloudStream Kotlin Source
+// --- AUTH DATA ---
 const MASTER_HASH = "988a734da1152ddea2c25c8904eede20%3A%3A0cb4f3935641c828678b8946867997e5%3A%3A1768993531%3A%3Ani";
-const USER_TOKEN = "233123f803cf02184bf6c67e149cdd50"; // Updated from Kotlin NetflixProvider
+const USER_TOKEN = "233123f803cf02184bf6c67e149cdd50"; 
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -60,7 +58,7 @@ function getUnixTime() {
   return Math.floor(Date.now() / 1e3);
 }
 
-// FIX: Kotlin uses net22.cc for Auth
+// Authenticate on META_BASE (net22.cc)
 function bypass() {
   const targetBase = META_BASE;
   const now = Date.now();
@@ -75,10 +73,7 @@ function bypass() {
   function attemptBypass(attempts) {
     if (attempts >= 3) throw new Error("Max auth attempts reached");
 
-    // Standard TV auth endpoint works for general session
-    const authUrl = `${targetBase}tv/p.php`;
-
-    return makeRequest(authUrl, {
+    return makeRequest(`${targetBase}tv/p.php`, {
       method: "POST",
       headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -105,23 +100,20 @@ function bypass() {
         timestamp: Date.now()
       };
       
-      console.log(`[NetMirror] Auth successful. Hash: ${tHash.substring(0, 10)}...`);
+      console.log(`[NetMirror] Auth successful.`);
       return tHash;
     });
   }
   return attemptBypass(0);
 }
 
-// FIX: Constructed exactly like Kotlin mapOf()
 function getCookieString(platform, dynamicHash) {
     const ott = platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf");
-    // Kotlin: "t_hash_t" to cookie_value, "ott" to "hs", "hd" to "on", "user_token"
-    // Note: We include both t_hash keys to be safe, Kotlin uses t_hash_t
     return `t_hash_t=${dynamicHash || MASTER_HASH}; t_hash=${dynamicHash}; ott=${ott}; hd=on; user_token=${USER_TOKEN}`;
 }
 
+// Search on META_BASE (net22.cc)
 function searchContent(query, platform) {
-  // Kotlin: uses mainUrl (net22) for search
   const apiBase = META_BASE; 
   const referer = `${META_BASE}home`;
 
@@ -146,12 +138,10 @@ function searchContent(query, platform) {
   }).then(r => r.json()).then(function(searchData) {
     if (searchData.searchResult && searchData.searchResult.length > 0) {
       return searchData.searchResult.map((item) => {
-        // Kotlin: posterUrl = "https://imgcdn.kim/hs/v/$id.jpg"
         let imgHost = "https://imgcdn.kim";
         let posterPath = `/poster/v/${item.id}.jpg`;
-        
         if (platform.toLowerCase() === 'disney') posterPath = `/hs/v/${item.id}.jpg`;
-        if (platform.toLowerCase() === 'primevideo') posterPath = `/pv/v/${item.id}.jpg`;
+        else if (platform.toLowerCase() === 'primevideo') posterPath = `/pv/v/${item.id}.jpg`;
 
         return {
           id: item.id,
@@ -164,8 +154,8 @@ function searchContent(query, platform) {
   });
 }
 
+// Get Details from META_BASE (net22.cc)
 function loadContent(contentId, platform) {
-  // Kotlin: uses mainUrl (net22) for loading details
   const apiBase = META_BASE;
   const referer = `${META_BASE}home`;
 
@@ -190,9 +180,9 @@ function loadContent(contentId, platform) {
   }).then(r => r.json()).then(function(postData) {
     let allEpisodes = postData.episodes || [];
     
-    // Logic for seasons (simplified for brevity, assumes data structure is valid)
-    // Note: If you need pagination logic for episodes, insert it here using the same META_BASE
-    
+    // Logic for seasons/pagination would go here if needed.
+    // For now, returning basic structure.
+
     return {
         id: contentId,
         title: postData.title,
@@ -203,14 +193,14 @@ function loadContent(contentId, platform) {
   });
 }
 
+// Get Links from STREAM_BASE (net52.cc)
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   
-  // FIX: Kotlin uses newUrl (net52.cc) for Playlist API
-  const apiBase = STREAM_BASE; 
-  // Kotlin: referer = "$mainUrl/" (net22) or "$newUrl/" depending on provider. 
-  // Safest is net22/home or root
-  const referer = `${META_BASE}`; 
+  // FIX: Playlist MUST utilize STREAM_BASE (net52)
+  const apiBase = STREAM_BASE + "/"; 
+  // FIX: Referer MUST be STREAM_BASE for playlists
+  const referer = STREAM_BASE + "/"; 
 
   return bypass().then(function(dynamicHash) {
     const cookieString = getCookieString(platform, dynamicHash);
@@ -224,7 +214,7 @@ function getStreamingLinks(contentId, title, platform) {
       `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`, {
         headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
-          "Referer": referer
+          "Referer": referer 
         })
       }
     ).then(r => r.json()).then(function(playlist) {
@@ -238,50 +228,49 @@ function getStreamingLinks(contentId, title, platform) {
       playlist.forEach((item) => {
         if (item.sources) {
           item.sources.forEach((source) => {
-            // FIX: Kotlin Logic: "$newUrl/${it.file}"
-            // We append the file directly to STREAM_BASE (net52.cc)
             let fullUrl = source.file;
+            
+            // FIX: Append relative path to STREAM_BASE (net52.cc)
             if (!fullUrl.startsWith('http')) {
-                // Handle leading slash if present or not
-                const cleanPath = fullUrl.startsWith('/') ? fullUrl.substring(1) : fullUrl;
-                fullUrl = `${STREAM_BASE}${cleanPath}`;
+                // If it starts with '/', standard concat works: https://net52.cc + /hls...
+                // If not, add slash: https://net52.cc + / + hls...
+                if (fullUrl.startsWith('/')) {
+                    fullUrl = `${STREAM_BASE}${fullUrl}`;
+                } else {
+                    fullUrl = `${STREAM_BASE}/${fullUrl}`;
+                }
             }
 
             let quality = "HD";
             let label = (source.label || "").toLowerCase();
-
             if (label === "auto" || label === "master") quality = "1080p (Auto)";
             else if (label.includes("1080")) quality = "1080p";
             else if (label.includes("720")) quality = "720p";
             else if (label.includes("480")) quality = "480p";
 
-            // FIX: Headers from Kotlin VideoInterceptor
-            // Kotlin: .header("Cookie", "hd=on") is crucial for the m3u8 request
             sources.push({
               url: fullUrl,
               quality: quality,
-              type: source.type || "application/x-mpegURL",
+              type: "hls", 
               headers: {
                 "User-Agent": BASE_HEADERS["User-Agent"],
-                "Referer": `${STREAM_BASE}`, // Kotlin: referer = "$newUrl/"
-                "Cookie": "hd=on", // CRITICAL FIX for 403 Error
-                "Connection": "keep-alive"
+                "Referer": referer, // MUST be net52.cc
+                "Cookie": "hd=on",  // Verified fix for 403
+                "Origin": STREAM_BASE
               }
             });
           });
         }
-
+        
         if (item.tracks) {
-          item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
-            let fullSubUrl = track.file;
-            if (fullSubUrl && !fullSubUrl.startsWith('http')) {
-                 fullSubUrl = `${STREAM_BASE}${fullSubUrl.startsWith('/') ? fullSubUrl.substring(1) : fullSubUrl}`;
-            }
-            subtitles.push({
-              url: fullSubUrl,
-              language: track.label || "English"
+            item.tracks.filter(t => t.kind === "captions").forEach(t => {
+                let sub = t.file;
+                if(sub && !sub.startsWith("http")) {
+                     if (sub.startsWith('/')) sub = `${STREAM_BASE}${sub}`;
+                     else sub = `${STREAM_BASE}/${sub}`;
+                }
+                subtitles.push({ url: sub, language: t.label || "English" });
             });
-          });
         }
       });
 
@@ -305,11 +294,10 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     let platforms = ["netflix", "primevideo", "disney"];
     const tLower = title.toLowerCase();
     
-    // Priority adjustments based on content
     if (tLower.includes("boys") || tLower.includes("prime") || tLower.includes("reacher")) {
-      platforms = ["primevideo", "netflix", "disney"];
+        platforms = ["primevideo", "netflix", "disney"];
     } else if (tLower.includes("mandalorian") || tLower.includes("marvel") || tLower.includes("star wars")) {
-      platforms = ["disney", "netflix", "primevideo"];
+        platforms = ["disney", "netflix", "primevideo"];
     }
 
     function calculateSimilarity(str1, str2) {
@@ -320,9 +308,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     }
 
     function tryPlatform(platformIndex) {
-      if (platformIndex >= platforms.length) {
-        return [];
-      }
+      if (platformIndex >= platforms.length) return [];
       const platform = platforms[platformIndex];
 
       function trySearch(withYear) {
@@ -355,8 +341,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
               const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
               const episodeData = validEpisodes.find((ep) => {
                 let epSeason = 0, epNumber = 0;
-                
-                // Normalizing episode data from different endpoints
                 if (ep.s && ep.ep) {
                   epSeason = parseInt(ep.s.replace("S", ""));
                   epNumber = parseInt(ep.ep.replace("E", ""));
@@ -364,7 +348,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   epSeason = parseInt(ep.season);
                   epNumber = parseInt(ep.episode);
                 }
-
                 return epSeason === (seasonNum || 1) && epNumber === (episodeNum || 1);
               });
 
@@ -391,15 +374,16 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                   headers: source.headers 
                 };
               });
-
+              
+              // Sort by quality
               streams.sort((a, b) => {
-                const score = (q) => {
-                  if (q.includes("Auto")) return 10000;
-                  if (q.includes("1080")) return 1080;
-                  if (q.includes("720")) return 720;
-                  return 0;
-                };
-                return score(b.quality) - score(a.quality);
+                  const getQ = s => {
+                      if(s.includes("Auto")) return 9999;
+                      if(s.includes("1080")) return 1080;
+                      if(s.includes("720")) return 720;
+                      return 0;
+                  }
+                  return getQ(b.quality) - getQ(a.quality);
               });
 
               return streams;
