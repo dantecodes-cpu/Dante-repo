@@ -18,16 +18,16 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Fix v4 - Net52/API Update)");
+console.log("[NetMirror] Initializing NetMirror provider (Updated for Net52)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// UPDATE 1: New Domain
+// --- CHANGELOG: Updated Domains ---
 const NETMIRROR_BASE = "https://net52.cc/"; 
-const DISNEY_BASE = "https://net20.cc/";
+const DISNEY_BASE = "https://net22.cc/"; // Rotated from net20.cc
 
-// UPDATE 2: New User Token (Required for all platforms now)
-const USER_TOKEN = "e362149021200003b137f8280f55098e";
+// --- CHANGELOG: New Static User Token ---
+const USER_TOKEN = "e362149021200003b137f8280f55098e"; 
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -37,10 +37,10 @@ const BASE_HEADERS = {
   "Connection": "keep-alive"
 };
 
-// Store cookies per domain to prevent cross-contamination
+// Cookie jar
 const cookieStore = {
   "https://net52.cc/": { value: "", timestamp: 0 },
-  "https://net20.cc/": { value: "", timestamp: 0 }
+  "https://net22.cc/": { value: "", timestamp: 0 }
 };
 const COOKIE_EXPIRY = 54e6; 
 
@@ -49,12 +49,11 @@ function getBaseUrl(platform) {
 }
 
 function getReferer(platform, isPlaylist = false) {
+  const base = getBaseUrl(platform);
   if (platform.toLowerCase() === "disney") {
-    // Disney Playlist requires root referer (net20.cc/)
-    // Disney Search/Post requires home referer (net20.cc/home)
-    return isPlaylist ? DISNEY_BASE : `${DISNEY_BASE}home`;
+    return isPlaylist ? base : `${base}home`;
   }
-  return `${NETMIRROR_BASE}tv/home`;
+  return `${base}tv/home`;
 }
 
 function makeRequest(url, options = {}) {
@@ -75,17 +74,14 @@ function getUnixTime() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// UPDATE 3: Completely rewritten Bypass Logic
-// Old: POST to tv/p.php -> Get Set-Cookie header
-// New: GET to tv/api/c.php -> Get hash from Response Body
+// --- CHANGELOG: New Bypass Logic (GET api/c.php) ---
 function bypass(platform) {
   const targetBase = getBaseUrl(platform);
   const now = Date.now();
-  
-  // Clean up old keys in cookieStore if domain changed
+
+  // Clear old domain cookies if they exist
   if (cookieStore["https://net51.cc/"]) delete cookieStore["https://net51.cc/"];
-  
-  // Initialize store if missing
+
   if (!cookieStore[targetBase]) {
       cookieStore[targetBase] = { value: "", timestamp: 0 };
   }
@@ -96,14 +92,14 @@ function bypass(platform) {
     return Promise.resolve(cached.value);
   }
 
-  console.log(`[NetMirror] Bypassing authentication on ${targetBase} (API Method)...`);
+  console.log(`[NetMirror] Bypassing authentication on ${targetBase}...`);
 
   function attemptBypass(attempts) {
     if (attempts >= 3) {
       throw new Error("Max bypass attempts reached");
     }
 
-    // Determine auth endpoint
+    // New API Endpoint for Auth
     let authUrl;
     if (platform.toLowerCase() === "disney") {
         authUrl = `${targetBase}mobile/hs/api/c.php`;
@@ -118,10 +114,11 @@ function bypass(platform) {
       })
     }).then(function(response) {
       return response.text().then(function(responseText) {
+        // The new API returns the hash directly in the body
         const extractedCookie = responseText.trim();
         
-        // Validation: The response should be a simple hash string, not JSON or HTML error
-        if (!extractedCookie || extractedCookie.includes("<") || extractedCookie.includes("{")) {
+        // Validation: Ensure it's not an HTML error page or JSON
+        if (!extractedCookie || extractedCookie.length < 5 || extractedCookie.includes("<") || extractedCookie.includes("{")) {
           console.log(`[NetMirror] Bypass attempt ${attempts + 1} failed (Invalid Token). Retrying...`);
           return delay(1000).then(() => attemptBypass(attempts + 1));
         }
@@ -143,11 +140,12 @@ function searchContent(query, platform) {
   const referer = getReferer(platform);
 
   return bypass(platform).then(function(cookie) {
+    // --- CHANGELOG: Added user_token to cookies ---
     const cookies = {
       "t_hash_t": cookie,
       "ott": platform.toLowerCase() === "disney" ? "hs" : (platform.toLowerCase() === "primevideo" ? "pv" : "nf"),
       "hd": "on",
-      "user_token": USER_TOKEN // Applied to ALL platforms now
+      "user_token": USER_TOKEN
     };
     
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
@@ -343,9 +341,10 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
 
+          // --- CHANGELOG: Force correct domain in streams ---
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
-            // Update to net52
-            fullUrl = fullUrl.replace("://net51.cc/tv/", "://net52.cc/").replace(/^\/tv\//, "/");
+             // Replace any old net51 refs with current base
+             fullUrl = fullUrl.replace(/:\/\/net\d+\.cc\/tv\//, `://${new URL(NETMIRROR_BASE).hostname}/`).replace(/^\/tv\//, "/");
           }
 
           try {
@@ -540,3 +539,4 @@ if (typeof module !== "undefined" && module.exports) {
 } else {
   global.getStreams = getStreams;
 }
+```[[1](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQGYdOQg8G7Or6eSOsN1Yvj2bCmxSDqt9goFX_pgC_1FX_AzrhelZKDrS2q51edbGHYQrd10l4MIwK-QaA8MGEL_yNKONNB_CJWsQUxzF5V9hoPH0-cKDbug1elOeWl49MUJEjUjfBH_ZomJdjSyfBgIFHQ4CYvuAzt85ZUWM21BdAN1YwkXrCoH4f2y-o1o1oyw8HT9Tis7PsW8S8agnmHgdj9xboffCnILjvbFp4Eiwfi_h_f-Qtk1ZMFTiXQ%3D)][[2](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQEnDY8QhQBepU_IedktqlTk3d3YaEmwX8tzXeEmwzHcvj28NtGx0WeKziOPFB3M0KcGpUsk7cq6VCuW1Nj5mzPjNslhU7DFz2zBy5u5Vx9bJCe8Ci9C1SJO_wp64QKL78H87lO4b7GegzSH_JPRfeH8J6tFsrBSvc10nclMEO1pEw%3D%3D)][[5](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQEQHtATYK5O1aIxqCRy3itUsBofi8qMwfjaVqB0f4USFjaYpujZ6EaqkTVfzb9uJc1x3Tx8xf0HkKI6OGgSLoWSjjbJ-FJ1TlwyZKa_Iz4n9VJdY9T1-IlRP5c5giiuH3VfHvar3MvjPojFM3o7r4WpQ3X7JO0QgSH3nBrPS2s9lg%3D%3D)]
