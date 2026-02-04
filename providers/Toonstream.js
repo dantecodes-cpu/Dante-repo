@@ -3,7 +3,7 @@
 // Features: Splits "Auto" links into 1080p, 720p, 480p, etc.
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const MAIN_URL = "https://toonstream.dad";
+const MAIN_URL = "https://toonstream.one";
 const USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
 async function getStreams(tmdbId, mediaType, season, episode) {
