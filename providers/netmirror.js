@@ -18,13 +18,14 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Optimized)");
+console.log("[NetMirror] Initializing NetMirror provider (Updated to net22/net52)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const NETMIRROR_BASE = "https://net51.cc/";
 
-// 🚀 UPGRADE: Use Android User-Agent globally.
-// This ensures we get mobile-optimized HLS streams (often better quality/compatibility).
+// 🚀 UPGRADE: Updated URLs based on working Kotlin files
+const MAIN_URL = "https://net22.cc/"; // Used for Search, Metadata, Auth
+const STREAM_URL = "https://net52.cc/"; // Used for Playlist, Streaming
+
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
   "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36",
@@ -40,7 +41,7 @@ const COOKIE_EXPIRY = 54e6;
 function makeRequest(url, options = {}) {
   return fetch(url, __spreadProps(__spreadValues({}, options), {
     headers: __spreadValues(__spreadValues({}, BASE_HEADERS), options.headers),
-    timeout: 10000 // 10s timeout
+    timeout: 10000 
   })).then(function(response) {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -53,32 +54,30 @@ function getUnixTime() {
   return Math.floor(Date.now() / 1e3);
 }
 
-// Helper for delays
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// 1. UPDATED AUTHENTICATION (Uses MAIN_URL)
 function bypass() {
   const now = Date.now();
   if (globalCookie && cookieTimestamp && now - cookieTimestamp < COOKIE_EXPIRY) {
-    // console.log("[NetMirror] Using cached authentication cookie");
     return Promise.resolve(globalCookie);
   }
   console.log("[NetMirror] Bypassing authentication...");
   
   function attemptBypass(attempts) {
-    if (attempts >= 4) { // Reduced attempts to 4 to fail faster if broken
+    if (attempts >= 4) { 
       throw new Error("Max bypass attempts reached");
     }
     
-    return makeRequest(`${NETMIRROR_BASE}tv/p.php`, {
+    return makeRequest(`${MAIN_URL}tv/p.php`, {
       method: "POST",
       headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
-        "Referer": `${NETMIRROR_BASE}tv/home`
+        "Referer": `${MAIN_URL}tv/home`
       })
     }).then(function(response) {
       const setCookieHeader = response.headers.get("set-cookie");
       let extractedCookie = null;
       if (setCookieHeader) {
-        // Handle array or string headers
         const cookieString = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
         const cookieMatch = cookieString.match(/t_hash_t=([^;]+)/);
         if (cookieMatch) {
@@ -88,7 +87,6 @@ function bypass() {
       return response.text().then(function(responseText) {
         if (!responseText.includes('"r":"n"')) {
           console.log(`[NetMirror] Bypass attempt ${attempts + 1} failed. Retrying...`);
-          // Add small delay between retries
           return delay(1000).then(() => attemptBypass(attempts + 1));
         }
         if (extractedCookie) {
@@ -104,24 +102,64 @@ function bypass() {
   return attemptBypass(0);
 }
 
+// 2. NEW HELPER: NETFLIX TOKEN GENERATION
+// Kotlin reference: getVideoToken function in Utils.kt
+function getVideoToken(contentId, cookieString) {
+    console.log("[NetMirror] Generating secure video token...");
+    
+    // Step 1: POST to MAIN_URL/play.php to get 'h' param
+    return makeRequest(`${MAIN_URL}play.php`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cookie": cookieString,
+            "Referer": `${MAIN_URL}`
+        },
+        body: `id=${contentId}`
+    }).then(r => r.json()).then(json => {
+        const hParam = json.h; // e.g., "h=..."
+        
+        // Step 2: GET to STREAM_URL/play.php using 'h' param to get 'data-h' token
+        return makeRequest(`${STREAM_URL}play.php?id=${contentId}&${hParam}`, {
+            headers: {
+                "Cookie": cookieString,
+                "Referer": `${MAIN_URL}`, // Important: Referer must be main site
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" // Emulate desktop for token
+            }
+        });
+    }).then(r => r.text()).then(html => {
+        // Extract data-h attribute value
+        const match = html.match(/data-h="([^"]+)"/);
+        if (match && match[1]) {
+            return match[1];
+        }
+        throw new Error("Failed to extract video token");
+    });
+}
+
 function searchContent(query, platform) {
   console.log(`[NetMirror] Searching for "${query}" on ${platform}...`);
   const ottMap = { "netflix": "nf", "primevideo": "pv", "disney": "hs" };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(function(cookie) {
-    const cookies = {
+    let cookies = {
       "t_hash_t": cookie,
-      "user_token": "a0a5f663894ade410614071fe46baca6",
       "ott": ott,
       "hd": "on"
     };
+    // Netflix needs user_token for search/browsing in some cases, updated hash from Kotlin
+    if (ott === "nf") {
+        cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
+    }
+
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
+    // Updated Endpoints to MAIN_URL
     const searchEndpoints = {
-      "netflix": `${NETMIRROR_BASE}search.php`,
-      "primevideo": `${NETMIRROR_BASE}pv/search.php`,
-      "disney": `${NETMIRROR_BASE}mobile/hs/search.php`
+      "netflix": `${MAIN_URL}search.php`,
+      "primevideo": `${MAIN_URL}pv/search.php`,
+      "disney": `${MAIN_URL}mobile/hs/search.php`
     };
     const searchUrl = searchEndpoints[platform.toLowerCase()] || searchEndpoints["netflix"];
     
@@ -130,7 +168,7 @@ function searchContent(query, platform) {
       {
         headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
-          "Referer": `${NETMIRROR_BASE}tv/home`
+          "Referer": `${MAIN_URL}tv/home`
         })
       }
     );
@@ -154,20 +192,22 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(function(cookie) {
-    const cookies = {
+    let cookies = {
       "t_hash_t": cookie,
-      "user_token": "a0a5f663894ade410614071fe46baca6",
       "ott": ott,
       "hd": "on"
     };
+    if (ott === "nf") cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
+
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const episodes = [];
     let currentPage = page || 1;
     
+    // Updated Endpoints to MAIN_URL
     const episodesEndpoints = {
-      "netflix": `${NETMIRROR_BASE}episodes.php`,
-      "primevideo": `${NETMIRROR_BASE}pv/episodes.php`,
-      "disney": `${NETMIRROR_BASE}mobile/hs/episodes.php`
+      "netflix": `${MAIN_URL}episodes.php`,
+      "primevideo": `${MAIN_URL}pv/episodes.php`,
+      "disney": `${MAIN_URL}mobile/hs/episodes.php`
     };
     const episodesUrl = episodesEndpoints[platform.toLowerCase()] || episodesEndpoints["netflix"];
     
@@ -177,7 +217,7 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
         {
           headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
             "Cookie": cookieString,
-            "Referer": `${NETMIRROR_BASE}tv/home`
+            "Referer": `${MAIN_URL}tv/home`
           })
         }
       ).then(r => r.json()).then(function(episodeData) {
@@ -199,23 +239,24 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
 }
 
 function loadContent(contentId, platform) {
-  // console.log(`[NetMirror] Loading content details for ID: ${contentId}`);
   const ottMap = { "netflix": "nf", "primevideo": "pv", "disney": "hs" };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(function(cookie) {
-    const cookies = {
+    let cookies = {
       "t_hash_t": cookie,
-      "user_token": "a0a5f663894ade410614071fe46baca6",
       "ott": ott,
       "hd": "on"
     };
+    if (ott === "nf") cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
+
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
+    // Updated Endpoints to MAIN_URL
     const postEndpoints = {
-      "netflix": `${NETMIRROR_BASE}post.php`,
-      "primevideo": `${NETMIRROR_BASE}pv/post.php`,
-      "disney": `${NETMIRROR_BASE}mobile/hs/post.php`
+      "netflix": `${MAIN_URL}post.php`,
+      "primevideo": `${MAIN_URL}pv/post.php`,
+      "disney": `${MAIN_URL}mobile/hs/post.php`
     };
     const postUrl = postEndpoints[platform.toLowerCase()] || postEndpoints["netflix"];
     
@@ -224,7 +265,7 @@ function loadContent(contentId, platform) {
       {
         headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
-          "Referer": `${NETMIRROR_BASE}tv/home`
+          "Referer": `${MAIN_URL}tv/home`
         })
       }
     );
@@ -232,7 +273,6 @@ function loadContent(contentId, platform) {
     let allEpisodes = postData.episodes || [];
     
     if (postData.episodes && postData.episodes.length > 0 && postData.episodes[0] !== null) {
-      // console.log("[NetMirror] Loading episodes from all seasons...");
       let episodePromise = Promise.resolve();
       
       if (postData.nextPageShow === 1 && postData.nextPageSeason) {
@@ -275,32 +315,51 @@ function loadContent(contentId, platform) {
   });
 }
 
-// 🔧 IMPROVED URL & QUALITY PARSER
+// 3. UPDATED STREAMING LOGIC (Uses STREAM_URL & Token)
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const ottMap = { "netflix": "nf", "primevideo": "pv", "disney": "hs" };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
-  return bypass().then(function(cookie) {
-    const cookies = {
+  return bypass().then(async function(cookie) {
+    let cookies = {
       "t_hash_t": cookie,
-      "user_token": "a0a5f663894ade410614071fe46baca6",
       "hd": "on",
       "ott": ott
     };
+    if (ott === "nf") cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
+
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     let playlistUrl;
+    let token = "";
+
+    // IMPORTANT: Netflix now requires a generated token
+    if (ott === "nf") {
+        try {
+            token = await getVideoToken(contentId, cookieString);
+            console.log("Got token:", token);
+        } catch (e) {
+            console.error("Token generation failed:", e);
+        }
+    }
     
-    if (platform.toLowerCase() === "primevideo") playlistUrl = `${NETMIRROR_BASE}tv/pv/playlist.php`;
-    else if (platform.toLowerCase() === "disney") playlistUrl = `${NETMIRROR_BASE}mobile/hs/playlist.php`;
-    else playlistUrl = `${NETMIRROR_BASE}tv/playlist.php`;
+    // Updated Endpoints to STREAM_URL (net52.cc)
+    if (platform.toLowerCase() === "primevideo") playlistUrl = `${STREAM_URL}pv/playlist.php`;
+    else if (platform.toLowerCase() === "disney") playlistUrl = `${STREAM_URL}mobile/hs/playlist.php`;
+    else playlistUrl = `${STREAM_URL}playlist.php`; // Netflix
+
+    // Add token to query if Netflix
+    let finalUrl = `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`;
+    if (ott === "nf" && token) {
+        finalUrl += `&h=${token}`;
+    }
 
     return makeRequest(
-      `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`,
+      finalUrl,
       {
         headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
-          "Referer": `${NETMIRROR_BASE}tv/home`
+          "Referer": `${STREAM_URL}` // Referer changes to stream domain for playlist
         })
       }
     );
@@ -319,41 +378,25 @@ function getStreamingLinks(contentId, title, platform) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
           
-          // 1. ROBUST URL CLEANING
-          // Fix Netflix path oddity
           if (platform.toLowerCase() === "netflix" && fullUrl.includes("/tv/")) {
-             fullUrl = fullUrl.replace("://net51.cc/tv/", "://net51.cc/").replace(/^\/tv\//, "/");
+             fullUrl = fullUrl.replace("://net52.cc/tv/", "://net52.cc/").replace(/^\/tv\//, "/");
           }
           
-          // Use URL constructor for safety (Handles // and relative paths correctly)
           try {
               if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-              else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, NETMIRROR_BASE).href;
+              // Ensure relative paths use STREAM_URL
+              else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, STREAM_URL).href;
           } catch(e) {
-              // fallback if URL construction fails
-              if (!fullUrl.startsWith('http')) fullUrl = NETMIRROR_BASE + fullUrl.replace(/^\//, '');
+              if (!fullUrl.startsWith('http')) fullUrl = STREAM_URL + fullUrl.replace(/^\//, '');
           }
 
-          // 2. ENHANCED QUALITY DETECTION (Fixes Disney+ 1080p issue)
           let quality = "HD";
           let label = (source.label || "").toLowerCase();
           
-          // A. If it's a master playlist (auto), treat as 1080p capable
-          if (label === "auto" || label === "master") {
-              quality = "1080p (Auto)";
-          } 
-          // B. Detect explicit 1080p tags
-          else if (label.includes("1080") || label.includes("full") || label.includes("fhd") || label.includes("original")) {
-              quality = "1080p";
-          }
-          // C. Detect 720p
-          else if (label.includes("720") || label.includes("hd")) {
-              quality = "720p";
-          }
-          // D. Detect 480p/SD
-          else if (label.includes("480") || label.includes("sd")) {
-              quality = "480p";
-          }
+          if (label === "auto" || label === "master") quality = "1080p (Auto)";
+          else if (label.includes("1080") || label.includes("full") || label.includes("fhd") || label.includes("original")) quality = "1080p";
+          else if (label.includes("720") || label.includes("hd")) quality = "720p";
+          else if (label.includes("480") || label.includes("sd")) quality = "480p";
           
           sources.push({
             url: fullUrl,
@@ -369,7 +412,7 @@ function getStreamingLinks(contentId, title, platform) {
           let fullSubUrl = track.file;
           try {
              if (fullSubUrl.startsWith('//')) fullSubUrl = 'https:' + fullSubUrl;
-             else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, NETMIRROR_BASE).href;
+             else if (!fullSubUrl.startsWith('http')) fullSubUrl = new URL(fullSubUrl, STREAM_URL).href;
           } catch(e) {}
           
           subtitles.push({
@@ -398,7 +441,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
     console.log(`[NetMirror] TMDB Info: "${title}" (${year})`);
     
     let platforms = ["netflix", "primevideo", "disney"];
-    // Prioritize platforms based on keywords
     if (title.toLowerCase().includes("boys") || title.toLowerCase().includes("prime")) {
       platforms = ["primevideo", "netflix", "disney"];
     } else if (title.toLowerCase().includes("mandalorian") || title.toLowerCase().includes("marvel")) {
@@ -445,7 +487,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
         return [];
       }
       const platform = platforms[platformIndex];
-      // console.log(`[NetMirror] Trying platform: ${platform}`);
       
       function trySearch(withYear) {
         const searchQuery = withYear ? `${title} ${year}` : title;
@@ -466,7 +507,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           
           return loadContent(selectedContent.id, platform).then(function(contentData) {
             if (mediaType === "tv" && contentData.isMovie) {
-               // Try second result if first one mismatch
                if (relevantResults.length > 1) {
                   return loadContent(relevantResults[1].id, platform).then(next => {
                       if(next.isMovie) return null;
@@ -485,7 +525,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
                 episodeData = validEpisodes.find((ep) => {
                   let epSeason, epNumber;
-                  // Handle various episode formats from API
                   if (ep.s && ep.ep) {
                     epSeason = parseInt(ep.s.replace("S", ""));
                     epNumber = parseInt(ep.ep.replace("E", ""));
@@ -511,7 +550,6 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 if (!streamData.sources || streamData.sources.length === 0) return null;
                 
                 const streams = streamData.sources.map((source) => {
-                  // Final Quality Check
                   let streamTitle = `${title} ${source.quality}`;
                   if (mediaType === "tv") {
                     streamTitle += ` S${seasonNum}E${episodeNum}`;
@@ -522,16 +560,15 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                     title: streamTitle,
                     url: source.url,
                     quality: source.quality,
-                    type: "hls", // NetMirror sources are almost always HLS
+                    type: "hls", 
                     headers: {
                       "User-Agent": BASE_HEADERS["User-Agent"],
                       "Accept": "*/*",
-                      "Referer": "https://net51.cc/"
+                      "Referer": STREAM_URL
                     }
                   };
                 });
                 
-                // Sort Priority: 1080p (Auto) > 1080p > 720p > 480p
                 streams.sort((a, b) => {
                    const score = (q) => {
                        if (q.includes("Auto") || q.includes("Master")) return 10000;
