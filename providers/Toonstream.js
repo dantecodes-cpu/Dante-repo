@@ -1,5 +1,5 @@
 // ToonStream Provider for Nuvio
-// Version: 14.0 (Multi-Audio Fix + Robust GDMirror)
+// Version: 15.0 (Fixes No Links, Enables Multi-Audio for Zephyr/Vidstack)
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -47,7 +47,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         let contentUrl = selected.url;
 
         // ---------------------------------------------------------
-        // 2. TV EPISODE LOGIC
+        // 2. TV EPISODE LOGIC (AJAX)
         // ---------------------------------------------------------
         if (mediaType === 'tv') {
             const pageHtml = await req(contentUrl);
@@ -96,7 +96,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         for (const m of matches) {
             let embedUrl = m[1].replace(/&#038;/g, '&');
             
-            // Resolve Internal "Phisher" Redirects
+            // Resolve Internal Redirects (Phisher Logic)
             if (embedUrl.includes('trembed=') || embedUrl.includes(MAIN_URL)) {
                  if (!embedUrl.startsWith('http')) embedUrl = MAIN_URL + embedUrl;
                  const resolved = await resolveInternalEmbed(embedUrl, contentUrl);
@@ -107,27 +107,27 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             processedUrls.add(embedUrl);
             
             // ---------------------------------------------------------
-            // 4. EXTRACTOR ROUTING
+            // 4. ROUTING & EXTRACTION
             // ---------------------------------------------------------
             
-            // A. AWSStream / Zephyr
+            // A. Zephyr / AWSStream (Known Multi-Audio)
             if (embedUrl.includes('awstream') || embedUrl.includes('zephyrflick')) {
                 const res = await extractAWSStream(embedUrl);
                 streams.push(...res);
             }
-            // B. GDMirrorBot / Techinmind (Key Source for Multi-Audio)
+            // B. VidStack / Cloudy (Known Multi-Audio)
+            else if (embedUrl.includes('cloudy') || embedUrl.includes('upns.one')) {
+                const res = await extractVidStack(embedUrl, "ToonStream [Cloudy]");
+                streams.push(...res);
+            }
+            // C. GDMirrorBot (Wrapper for other hosts)
             else if (embedUrl.includes('gdmirrorbot') || embedUrl.includes('techinmind')) {
                 const res = await extractGDMirrorBot(embedUrl);
                 streams.push(...res);
             }
-            // C. StreamRuby
+            // D. StreamRuby
             else if (embedUrl.includes('rubystm') || embedUrl.includes('streamruby')) {
                 const res = await extractStreamRuby(embedUrl);
-                streams.push(...res);
-            }
-            // D. Cloudy / VidStack
-            else if (embedUrl.includes('cloudy') || embedUrl.includes('upns.one')) {
-                const res = await extractVidStack(embedUrl, "ToonStream [Cloudy]");
                 streams.push(...res);
             }
             // E. Universal Fallback
@@ -169,7 +169,7 @@ async function resolveInternalEmbed(url, referer) {
 }
 
 // ==========================================================
-// SPECIFIC EXTRACTORS
+// EXTRACTORS
 // ==========================================================
 
 async function extractAWSStream(url) {
@@ -178,6 +178,7 @@ async function extractAWSStream(url) {
         const domain = u.origin;
         const hash = u.pathname.split('/').pop();
         const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
+        // Exact Kotlin Body: hash={hash}&r={mainUrl}
         const body = `hash=${hash}&r=${domain}`;
 
         const jsonText = await req(apiUrl, {
@@ -188,9 +189,39 @@ async function extractAWSStream(url) {
 
         const json = JSON.parse(jsonText);
         if (json && json.videoSource && json.videoSource !== '0') {
-            return await parseHLS(json.videoSource, { "Referer": "" }, `ToonStream [${u.hostname}]`);
+            const name = url.includes('zephyr') ? "ToonStream [Zephyr]" : "ToonStream [AWS]";
+            // Priority: Pass true to force inclusion of Master Playlist for Multi-Audio
+            return await parseHLS(json.videoSource, { "Referer": "" }, name, true);
         }
     } catch (e) { }
+    return [];
+}
+
+async function extractVidStack(url, name) {
+    try {
+        const u = new URL(url);
+        const id = u.pathname.split('/').pop();
+        const apiUrl = `${u.origin}/api/source/${id}`;
+        
+        const jsonText = await req(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `r=${encodeURIComponent(url)}&d=${u.hostname}`
+        });
+        
+        const json = JSON.parse(jsonText);
+        if (json && json.data && Array.isArray(json.data)) {
+            const res = [];
+            for (const item of json.data) {
+                if (item.file && item.file.includes('.m3u8')) {
+                    // Force master playlist for VidStack to support audio switching
+                    const qualities = await parseHLS(item.file, { "Referer": url }, name, true);
+                    res.push(...qualities);
+                }
+            }
+            return res;
+        }
+    } catch (e) {}
     return [];
 }
 
@@ -201,7 +232,7 @@ async function extractGDMirrorBot(url) {
         let host = u.origin;
         let sid = "";
 
-        // 1. Handle Key-based URLs (Complex)
+        // 1. Key Logic
         if (url.includes("key=")) {
             const pageText = await req(url);
             if (!pageText) return [];
@@ -231,11 +262,9 @@ async function extractGDMirrorBot(url) {
             }
         } 
         
-        // 2. Handle Simple URLs
         if (!sid) sid = url.split('/').pop();
         if (!sid) return [];
 
-        // 3. Call EmbedHelper
         const helperUrl = `${host}/embedhelper.php`;
         const jsonText = await req(helperUrl, {
             method: 'POST',
@@ -249,7 +278,6 @@ async function extractGDMirrorBot(url) {
         if (!data.siteUrls || !data.mresult) return [];
 
         const siteUrls = data.siteUrls; 
-        // FIX: Handle mresult being object OR base64 string
         let mresult = {};
         if (typeof data.mresult === 'object') {
             mresult = data.mresult;
@@ -267,7 +295,6 @@ async function extractGDMirrorBot(url) {
                 const fullUrl = `${base}/${path}`;
                 const name = friendlyNames[key] || key;
                 
-                // Identify High-Quality / Multi-Audio Hosts
                 if (name === "StreamHG" || name === "EarnVids" || fullUrl.includes('vidhide')) {
                      const subRes = await extractUniversal(fullUrl, "ToonStream [VidHide]");
                      res.push(...subRes);
@@ -294,33 +321,6 @@ async function extractStreamRuby(url) {
         const match = html.match(/file:\s*"(.*?m3u8.*?)"/);
         if (match) {
             return await parseHLS(match[1], { "Referer": "https://streamruby.com/" }, "ToonStream [Ruby]");
-        }
-    } catch (e) {}
-    return [];
-}
-
-async function extractVidStack(url, name) {
-    try {
-        const u = new URL(url);
-        const id = u.pathname.split('/').pop();
-        const apiUrl = `${u.origin}/api/source/${id}`;
-        
-        const jsonText = await req(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `r=${encodeURIComponent(url)}&d=${u.hostname}`
-        });
-        
-        const json = JSON.parse(jsonText);
-        if (json && json.data && Array.isArray(json.data)) {
-            const res = [];
-            for (const item of json.data) {
-                if (item.file && item.file.includes('.m3u8')) {
-                    const qualities = await parseHLS(item.file, { "Referer": url }, name);
-                    res.push(...qualities);
-                }
-            }
-            return res;
         }
     } catch (e) {}
     return [];
@@ -354,7 +354,6 @@ async function extractUniversal(url, customName = null) {
                     else if (url.includes('filemoon')) name = "ToonStream [FileMoon]";
                     else if (url.includes('wish')) name = "ToonStream [Wish]";
                 }
-                
                 const qualities = await parseHLS(link, headers, name);
                 res.push(...qualities);
             }
@@ -364,60 +363,82 @@ async function extractUniversal(url, customName = null) {
 }
 
 // ==========================================================
-// CRITICAL FIX: PARSE HLS + AUDIO DETECTION
+// CRITICAL FIX: PARSE HLS WITH FALLBACK
 // ==========================================================
-async function parseHLS(url, headers, sourceName) {
+async function parseHLS(url, headers, sourceName, forceMaster = false) {
     const streams = [];
+    let m3u8Content = null;
+
     try {
-        const m3u8Content = await req(url, { headers });
-        if (!m3u8Content) return []; 
+        m3u8Content = await req(url, { headers });
+    } catch (e) {
+        // Fallback if req fails (CORS, etc): Return Master URL
+    }
 
-        if (m3u8Content.includes("#EXTM3U")) {
-            // FIX: Detect Multi-Audio in Master Playlist
-            // If the playlist defines Audio Groups, we MUST return the Master URL directly
-            // splitting it into resolutions will lose the audio tracks.
-            if (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID")) {
-                return [{
-                    name: sourceName,
-                    title: "Multi-Audio (Auto)",
-                    type: "url",
-                    url: url,
-                    headers: headers
-                }];
-            }
+    // If we couldn't get content, OR if we want to force Master (for Multi-Audio), add the master link
+    if (!m3u8Content || forceMaster) {
+        streams.push({
+            name: sourceName,
+            title: "Auto / Multi-Audio",
+            type: "url",
+            url: url,
+            headers: headers
+        });
+        
+        // If we failed to get content, stop here (we have the link, that's what matters)
+        if (!m3u8Content) return streams;
+    }
 
-            const lines = m3u8Content.split('\n');
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].trim();
-                if (line.startsWith('#EXT-X-STREAM-INF')) {
-                    const resMatch = line.match(/RESOLUTION=(\d+)x(\d+)/);
-                    let quality = "Auto";
-                    if (resMatch) {
-                        const height = parseInt(resMatch[2]);
-                        if (height >= 1080) quality = "1080p";
-                        else if (height >= 720) quality = "720p";
-                        else if (height >= 480) quality = "480p";
-                        else quality = "360p";
+    if (m3u8Content.includes("#EXTM3U")) {
+        // If it contains explicit audio definitions and we haven't forced master yet, return master
+        if (!forceMaster && (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID"))) {
+             return [{
+                name: sourceName,
+                title: "Auto / Multi-Audio",
+                type: "url",
+                url: url,
+                headers: headers
+            }];
+        }
+
+        const lines = m3u8Content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('#EXT-X-STREAM-INF')) {
+                const resMatch = line.match(/RESOLUTION=(\d+)x(\d+)/);
+                let quality = "Auto";
+                if (resMatch) {
+                    const height = parseInt(resMatch[2]);
+                    if (height >= 1080) quality = "1080p";
+                    else if (height >= 720) quality = "720p";
+                    else if (height >= 480) quality = "480p";
+                    else quality = "360p";
+                }
+
+                let nextLine = lines[i + 1]?.trim();
+                if (nextLine && !nextLine.startsWith('#')) {
+                    if (!nextLine.startsWith('http')) {
+                        const u = new URL(url);
+                        const basePath = url.substring(0, url.lastIndexOf('/') + 1);
+                        nextLine = nextLine.startsWith('/') ? u.origin + nextLine : basePath + nextLine;
                     }
-
-                    let nextLine = lines[i + 1]?.trim();
-                    if (nextLine && !nextLine.startsWith('#')) {
-                        if (!nextLine.startsWith('http')) {
-                            const u = new URL(url);
-                            const basePath = url.substring(0, url.lastIndexOf('/') + 1);
-                            nextLine = nextLine.startsWith('/') ? u.origin + nextLine : basePath + nextLine;
-                        }
-                        streams.push({ name: sourceName, title: quality, type: "url", url: nextLine, headers: headers });
-                    }
+                    streams.push({ name: sourceName, title: quality, type: "url", url: nextLine, headers: headers });
                 }
             }
         }
-    } catch (e) { }
+    }
 
+    // If parsing produced nothing (not a master playlist or parsing failed), ensure we return at least the original link
     if (streams.length === 0) {
         streams.push({ name: sourceName, title: "Auto", type: "url", url: url, headers: headers });
     }
-    return streams;
+
+    // Sort: Multi-Audio/Auto at Top, then resolutions
+    return streams.sort((a, b) => {
+        if (a.title.includes("Multi-Audio")) return -1;
+        if (b.title.includes("Multi-Audio")) return 1;
+        return 0; // Keep others roughly same
+    });
 }
 
 function unpack(p) {
