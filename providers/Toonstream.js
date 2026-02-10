@@ -1,5 +1,5 @@
 // ToonStream Provider for Nuvio
-// Version: 13.5 (Full GDMirror Logic + Key Parsing)
+// Version: 12.0 (Sync with Kotlin)
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -13,6 +13,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const tmdbData = JSON.parse(tmdbResp);
         
         let title = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
+        // Clean title logic
         const cleanTitle = title.replace(/[:\-]/g, ' ').replace(/\s+/g, ' ').trim();
         
         const searchUrl = `${MAIN_URL}/page/1/?s=${encodeURIComponent(cleanTitle)}`;
@@ -20,12 +21,16 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         if (!searchHtml) return [];
 
         const results = [];
+        // Regex matches the Kotlin selector: #movies-a > ul > li > article
+        // We look for article tags with hrefs
         const articleRegex = /<article[^>]*>[\s\S]*?<a href="([^"]+)"[\s\S]*?<h2[^>]*>([^<]+)<\/h2>/gi;
         let match;
         while ((match = articleRegex.exec(searchHtml)) !== null) {
             let rawUrl = match[1];
             let rawTitle = match[2].replace('Watch Online', '').trim();
+            
             if (!rawUrl.startsWith('http')) rawUrl = MAIN_URL + rawUrl;
+            
             if (rawUrl.includes('/movies/') || rawUrl.includes('/series/') || rawUrl.includes('/cartoon/') || rawUrl.includes('/anime/')) {
                 results.push({ url: rawUrl, title: rawTitle });
             }
@@ -44,43 +49,57 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         if (!selected) return [];
         let contentUrl = selected.url;
 
-        // 2. TV EPISODE LOGIC
+        // 2. TV EPISODE LOGIC (AJAX)
         if (mediaType === 'tv') {
             const pageHtml = await req(contentUrl);
+            
+            // Kotlin logic: Finds data-post and data-season in: div.aa-drp.choose-season > ul > li > a
+            // Then POSTs to admin-ajax.php
             const seasonRegex = new RegExp(`data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>.*?Season\\s*${season}\\b`, 'i');
             const sMatch = pageHtml.match(seasonRegex);
 
-            if (sMatch) {
-                const postId = sMatch[1];
-                const seasonId = sMatch[2];
-                const ajaxUrl = `${MAIN_URL}/wp-admin/admin-ajax.php`;
-                const formData = `action=action_select_season&season=${seasonId}&post=${postId}`;
-                
-                const ajaxHtml = await req(ajaxUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Referer': contentUrl
-                    },
-                    body: formData
-                });
-
-                const epRegex = /<span class="num-epi">(\d+)x(\d+)<\/span>[\s\S]*?<a href="([^"]+)"/gi;
-                let epMatch, foundEpUrl = null;
-                while ((epMatch = epRegex.exec(ajaxHtml)) !== null) {
-                    if (parseInt(epMatch[1]) == season && parseInt(epMatch[2]) == episode) {
-                        foundEpUrl = epMatch[3];
-                        break;
-                    }
-                }
-                if (!foundEpUrl) return [];
-                contentUrl = foundEpUrl;
+            if (!sMatch) {
+                // Sometimes season 1 is default/loaded or there is only one season? 
+                // If regex fails, we might already be on the page, but usually Toonstream uses AJAX for episodes.
+                // Let's try to find if episodes are already listed or fallback.
+                return [];
             }
+
+            const postId = sMatch[1];
+            const seasonId = sMatch[2];
+            const ajaxUrl = `${MAIN_URL}/wp-admin/admin-ajax.php`;
+            const formData = `action=action_select_season&season=${seasonId}&post=${postId}`;
+            
+            const ajaxHtml = await req(ajaxUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': contentUrl
+                },
+                body: formData
+            });
+
+            // Parse episodes from AJAX response
+            // Kotlin: <span class="num-epi">1x1</span> ... <a href="...">
+            const epRegex = /<span class="num-epi">(\d+)x(\d+)<\/span>[\s\S]*?<a href="([^"]+)"/gi;
+            let epMatch, foundEpUrl = null;
+            while ((epMatch = epRegex.exec(ajaxHtml)) !== null) {
+                if (parseInt(epMatch[1]) == season && parseInt(epMatch[2]) == episode) {
+                    foundEpUrl = epMatch[3];
+                    break;
+                }
+            }
+
+            if (!foundEpUrl) return [];
+            contentUrl = foundEpUrl;
         }
 
         // 3. EXTRACT PLAYERS
         const playerHtml = await req(contentUrl);
+        // Kotlin Logic: Selects #aa-options > div > iframe -> attr("data-src")
+        // The data-src is usually an internal embed like: https://toonstream.dad/home/?trembed=...
+        
         const embedRegex = /data-src="([^"]+)"/gi;
         const matches = [...playerHtml.matchAll(embedRegex)];
         
@@ -90,43 +109,39 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         for (const m of matches) {
             let embedUrl = m[1].replace(/&#038;/g, '&');
             
-            // Resolve Internal "Phisher" Redirects
-            if (embedUrl.includes('trembed=') || embedUrl.includes(MAIN_URL)) {
-                 if (!embedUrl.startsWith('http')) embedUrl = MAIN_URL + embedUrl;
-                 const resolved = await resolveInternalEmbed(embedUrl, contentUrl);
-                 if (resolved) embedUrl = resolved;
+            // Filter: Ensure it's a trembed link or relevant internal link
+            if (!embedUrl.includes('trembed=') && !embedUrl.includes(MAIN_URL)) continue;
+            if (!embedUrl.startsWith('http')) embedUrl = MAIN_URL + embedUrl;
+
+            // Kotlin Logic: truelink = app.get(serverlink).documentLarge.selectFirst("iframe")?.attr("src")
+            const realUrl = await resolveRedirect(embedUrl, contentUrl);
+            
+            if (!realUrl || processedUrls.has(realUrl)) continue;
+            processedUrls.add(realUrl);
+            
+            // Extract based on host
+            let extracted = false;
+
+            // A. AWSStream / Zephyr (Kotlin: AWSStream class)
+            if (realUrl.includes('awstream') || realUrl.includes('zephyrflick')) {
+                const res = await extractAWSStream(realUrl);
+                if (res && res.length > 0) { streams.push(...res); extracted = true; }
             }
 
-            if (!embedUrl || processedUrls.has(embedUrl)) continue;
-            processedUrls.add(embedUrl);
-            
-            // 4. ROUTING
-            if (embedUrl.includes('awstream') || embedUrl.includes('zephyrflick')) {
-                const res = await extractAWSStream(embedUrl);
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('gdmirrorbot') || embedUrl.includes('techinmind')) {
-                const res = await extractGDMirrorBot(embedUrl);
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('rubystm') || embedUrl.includes('streamruby')) {
-                const res = await extractStreamRuby(embedUrl);
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('cloudy') || embedUrl.includes('upns.one')) {
-                const res = await extractVidStack(embedUrl, "ToonStream [Cloudy]");
-                streams.push(...res);
-            }
-            else {
-                 const res = await extractUniversal(embedUrl);
-                 streams.push(...res);
+            // B. Universal Fallback (VidStack, etc)
+            if (!extracted) {
+                const genericLinks = await extractUniversal(realUrl);
+                if (genericLinks.length > 0) {
+                    streams.push(...genericLinks);
+                    extracted = true;
+                }
             }
         }
 
         return streams;
 
     } catch (e) {
-        console.error("[ToonStream] Error:", e);
+        console.log("Toonstream Error:", e);
         return [];
     }
 }
@@ -141,230 +156,30 @@ async function req(url, opts = {}) {
         'Referer': MAIN_URL, 
         ...opts.headers 
     };
-    try {
-        const response = await fetch(url, { ...opts, headers });
-        return response.ok ? response.text() : null;
-    } catch (e) { return null; }
+    const response = await fetch(url, { ...opts, headers });
+    return response.ok ? response.text() : null;
 }
 
-async function resolveInternalEmbed(url, referer) {
-    const html = await req(url, { headers: { Referer: referer } });
-    if (!html) return null;
-    const match = html.match(/<iframe[^>]*src=["']([^"']+)["']/i);
-    return match ? (match[1].startsWith('//') ? 'https:' + match[1] : match[1]) : null;
-}
-
-// ==========================================================
-// EXTRACTORS
-// ==========================================================
-
-async function extractAWSStream(url) {
+// Emulates: app.get(serverlink).documentLarge.selectFirst("iframe")?.attr("src")
+async function resolveRedirect(url, referer) {
     try {
-        const u = new URL(url);
-        const domain = u.origin;
-        const hash = u.pathname.split('/').pop();
-        const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
-        const body = `hash=${hash}&r=${domain}`;
-
-        const jsonText = await req(apiUrl, {
-            method: 'POST',
-            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body
-        });
-
-        const json = JSON.parse(jsonText);
-        if (json && json.videoSource && json.videoSource !== '0') {
-            return await parseHLS(json.videoSource, { "Referer": "" }, `ToonStream [${u.hostname}]`);
-        }
-    } catch (e) { }
-    return [];
-}
-
-// Full Port of GDMirrorbot.kt (handles key= logic)
-async function extractGDMirrorBot(url) {
-    const res = [];
-    try {
-        const u = new URL(url);
-        let host = u.origin;
-        let sid = "";
-
-        // 1. Handle Complex Logic (URL contains 'key=')
-        if (url.includes("key=")) {
-            const pageText = await req(url);
-            if (!pageText) return [];
-
-            const finalIdMatch = pageText.match(/FinalID\s*=\s*"([^"]+)"/);
-            const myKeyMatch = pageText.match(/myKey\s*=\s*"([^"]+)"/);
-            const idTypeMatch = pageText.match(/idType\s*=\s*"([^"]+)"/); // defaults to imdbid
-            const baseUrlMatch = pageText.match(/let\s+baseUrl\s*=\s*"([^"]+)"/);
-
-            const finalId = finalIdMatch ? finalIdMatch[1] : null;
-            const myKey = myKeyMatch ? myKeyMatch[1] : null;
-            const idType = idTypeMatch ? idTypeMatch[1] : "imdbid";
-            
-            if (baseUrlMatch && baseUrlMatch[1]) {
-                try { host = new URL(baseUrlMatch[1]).origin; } catch(e){}
-            }
-
-            if (finalId && myKey) {
-                let apiUrl = "";
-                // Check if it's a TV show (contains /tv/)
-                if (url.includes("/tv/")) {
-                    const seasonMatch = url.match(/\/tv\/\d+\/(\d+)\//);
-                    const episodeMatch = url.match(/\/tv\/\d+\/\d+\/(\d+)/);
-                    const season = seasonMatch ? seasonMatch[1] : "1";
-                    const episode = episodeMatch ? episodeMatch[1] : "1";
-                    apiUrl = `${host}/myseriesapi?tmdbid=${finalId}&season=${season}&epname=${episode}&key=${myKey}`;
-                } else {
-                    apiUrl = `${host}/mymovieapi?${idType}=${finalId}&key=${myKey}`;
-                }
-                
-                // Get the real file data from the API
-                const apiText = await req(apiUrl);
-                if (apiText) {
-                    const apiJson = JSON.parse(apiText);
-                    // Extract fileslug from data[0]
-                    if (apiJson.data && apiJson.data.length > 0 && apiJson.data[0].fileslug) {
-                        sid = apiJson.data[0].fileslug;
-                    }
-                }
-            }
-        } 
-        
-        // 2. Handle Simple Logic (Sid is in URL)
-        if (!sid) {
-             sid = url.split('/').pop();
-        }
-
-        // 3. Call EmbedHelper
-        if (!sid) return [];
-        const helperUrl = `${host}/embedhelper.php`;
-        const jsonText = await req(helperUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `sid=${sid}`
-        });
-
-        if (!jsonText) return [];
-        const data = JSON.parse(jsonText);
-        
-        if (!data.siteUrls || !data.mresult) return [];
-
-        const siteUrls = data.siteUrls; 
-        const mresultDecoded = atob(data.mresult);
-        const mresult = JSON.parse(mresultDecoded); 
-        const friendlyNames = data.siteFriendlyNames || {};
-
-        const keys = Object.keys(siteUrls);
-        
-        for (const key of keys) {
-            if (mresult[key]) {
-                const base = siteUrls[key].replace(/\/$/, '');
-                const path = mresult[key].replace(/^\//, '');
-                const fullUrl = `${base}/${path}`;
-                const name = friendlyNames[key] || key;
-                
-                // Route based on friendly name (from Extractors.kt)
-                if (name === "StreamHG" || name === "EarnVids" || fullUrl.includes('vidhide')) {
-                     const subRes = await extractUniversal(fullUrl);
-                     res.push(...subRes);
-                } else if (name === "RpmShare" || name === "UpnShare" || name === "StreamP2p") {
-                     const subRes = await extractVidStack(fullUrl, `ToonStream [${name}]`);
-                     res.push(...subRes);
-                } else {
-                     const subRes = await extractUniversal(fullUrl);
-                     res.push(...subRes);
-                }
-            }
-        }
-    } catch (e) { console.log("GDMirror Error", e); }
-    return res;
-}
-
-async function extractStreamRuby(url) {
-    try {
-        const cleanUrl = url.replace('/e/', '/');
-        const html = await req(cleanUrl);
-        const match = html.match(/file:\s*"(.*?m3u8.*?)"/);
+        const html = await req(url, { headers: { Referer: referer } });
+        if (!html) return null;
+        const match = html.match(/<iframe[^>]*src=["']([^"']+)["']/i);
         if (match) {
-            return await parseHLS(match[1], { "Referer": "https://streamruby.com/" }, "ToonStream [Ruby]");
+            let src = match[1];
+            if (src.startsWith('//')) src = 'https:' + src;
+            return src;
         }
-    } catch (e) {}
-    return [];
+        return null;
+    } catch(e) { return null; }
 }
-
-async function extractVidStack(url, name) {
-    try {
-        const u = new URL(url);
-        const id = u.pathname.split('/').pop();
-        const apiUrl = `${u.origin}/api/source/${id}`;
-        
-        const jsonText = await req(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `r=${encodeURIComponent(url)}&d=${u.hostname}`
-        });
-        
-        const json = JSON.parse(jsonText);
-        if (json && json.data && Array.isArray(json.data)) {
-            const res = [];
-            for (const item of json.data) {
-                if (item.file && item.file.includes('.m3u8')) {
-                    const qualities = await parseHLS(item.file, { "Referer": url }, name);
-                    res.push(...qualities);
-                }
-            }
-            return res;
-        }
-    } catch (e) {}
-    return [];
-}
-
-async function extractUniversal(url) {
-    const res = [];
-    try {
-        if (url.includes('awstream') || url.includes('zephyr')) return [];
-
-        const headers = { 'Referer': url };
-        const html = await req(url, { headers });
-        if (!html) return [];
-        
-        let content = html;
-        const packerRegex = /(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/;
-        const packed = content.match(packerRegex);
-        if (packed) {
-            const unpacked = unpack(packed[1]);
-            if (unpacked) content = unpacked;
-        }
-
-        const urlRegex = /["'](?<url>https?:\/\/[^"']+\.m3u8[^"']*)["']/gi;
-        let m;
-        while ((m = urlRegex.exec(content)) !== null) {
-            let link = m.groups.url.replace(/\\/g, '');
-            if (!res.some(r => r.url === link)) {
-                let name = "ToonStream [HLS]";
-                if (url.includes('dood')) name = "ToonStream [Dood]";
-                else if (url.includes('filemoon')) name = "ToonStream [FileMoon]";
-                else if (url.includes('wish')) name = "ToonStream [Wish]";
-                else if (url.includes('vidhide') || url.includes('streamhg')) name = "ToonStream [VidHide]";
-                
-                const qualities = await parseHLS(link, headers, name);
-                res.push(...qualities);
-            }
-        }
-    } catch (e) {}
-    return res;
-}
-
-// ==========================================================
-// UTILS
-// ==========================================================
 
 async function parseHLS(url, headers, sourceName) {
     const streams = [];
     try {
         const m3u8Content = await req(url, { headers });
-        if (!m3u8Content) return []; 
+        if (!m3u8Content) return [];
 
         if (m3u8Content.includes("#EXTM3U")) {
             const lines = m3u8Content.split('\n');
@@ -401,14 +216,53 @@ async function parseHLS(url, headers, sourceName) {
     return streams;
 }
 
-function unpack(p) {
+// Matches Kotlin: AWSStream class
+async function extractAWSStream(url) {
     try {
-        let params = p.match(/\}\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)/);
-        if (!params) return null;
-        let [_, payload, radix, count, dict] = params;
-        dict = dict.split('|');
-        return payload.replace(/\b\w+\b/g, (w) => dict[parseInt(w, 36)] || w);
+        const domain = new URL(url).origin; // Handles z.awstream.net or play.zephyrflick.top
+        const hash = url.split('/').pop().split('?')[0];
+        
+        // API: /player/index.php?data={hash}&do=getVideo
+        const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
+        const body = `hash=${hash}&r=${domain}`; // Kotlin sends r=mainUrl, but r=domain usually works safely
+        
+        const jsonText = await req(apiUrl, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body
+        });
+        
+        const json = JSON.parse(jsonText);
+        if (json && json.videoSource && json.videoSource !== '0') {
+            return await parseHLS(json.videoSource, { "Referer": "" }, "ToonStream [AWS]");
+        }
     } catch (e) { return null; }
+}
+
+async function extractUniversal(url) {
+    const res = [];
+    try {
+        const headers = { 'Referer': url };
+        const html = await req(url, { headers });
+        if (!html) return [];
+        
+        // Simple HLS regex
+        const urlRegex = /["'](?<url>https?:\/\/[^"']+\.m3u8[^"']*)["']/gi;
+        let m;
+        while ((m = urlRegex.exec(html)) !== null) {
+            let link = m.groups.url;
+            link = link.replace(/\\/g, '');
+            if (!res.some(r => r.url === link)) {
+                let name = "ToonStream [HLS]";
+                if (url.includes('ruby')) name = "ToonStream [Ruby]";
+                else if (url.includes('cloudy')) name = "ToonStream [Cloudy]";
+                
+                const qualities = await parseHLS(link, headers, name);
+                res.push(...qualities);
+            }
+        }
+    } catch (e) {}
+    return res;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
