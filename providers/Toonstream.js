@@ -1,5 +1,5 @@
 // ToonStream Provider for Nuvio
-// Version: 15.0 (Fixes No Links, Enables Multi-Audio for Zephyr/Vidstack)
+// Version: 16.0 (Fixes FileMoon, StreamRuby, and VidStack IPs)
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -47,7 +47,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         let contentUrl = selected.url;
 
         // ---------------------------------------------------------
-        // 2. TV EPISODE LOGIC (AJAX)
+        // 2. TV EPISODE LOGIC
         // ---------------------------------------------------------
         if (mediaType === 'tv') {
             const pageHtml = await req(contentUrl);
@@ -87,7 +87,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         // 3. EXTRACT PLAYERS
         // ---------------------------------------------------------
         const playerHtml = await req(contentUrl);
-        const embedRegex = /data-src="([^"]+)"/gi;
+        // Improved Regex: Matches data-src, src, or just raw links in iframes
+        const embedRegex = /(?:data-src|src)="([^"]+)"/gi;
         const matches = [...playerHtml.matchAll(embedRegex)];
         
         const streams = [];
@@ -96,7 +97,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         for (const m of matches) {
             let embedUrl = m[1].replace(/&#038;/g, '&');
             
-            // Resolve Internal Redirects (Phisher Logic)
+            // Resolve Internal Embeds
             if (embedUrl.includes('trembed=') || embedUrl.includes(MAIN_URL)) {
                  if (!embedUrl.startsWith('http')) embedUrl = MAIN_URL + embedUrl;
                  const resolved = await resolveInternalEmbed(embedUrl, contentUrl);
@@ -105,32 +106,32 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
             if (!embedUrl || processedUrls.has(embedUrl)) continue;
             processedUrls.add(embedUrl);
-            
+
             // ---------------------------------------------------------
-            // 4. ROUTING & EXTRACTION
+            // 4. ROUTING
             // ---------------------------------------------------------
-            
-            // A. Zephyr / AWSStream (Known Multi-Audio)
+
+            // A. Zephyr / AWSStream
             if (embedUrl.includes('awstream') || embedUrl.includes('zephyrflick')) {
                 const res = await extractAWSStream(embedUrl);
                 streams.push(...res);
             }
-            // B. VidStack / Cloudy (Known Multi-Audio)
+            // B. VidStack / Cloudy (catches strmupcdn.cc)
             else if (embedUrl.includes('cloudy') || embedUrl.includes('upns.one')) {
                 const res = await extractVidStack(embedUrl, "ToonStream [Cloudy]");
                 streams.push(...res);
             }
-            // C. GDMirrorBot (Wrapper for other hosts)
+            // C. GDMirrorBot
             else if (embedUrl.includes('gdmirrorbot') || embedUrl.includes('techinmind')) {
                 const res = await extractGDMirrorBot(embedUrl);
                 streams.push(...res);
             }
-            // D. StreamRuby
+            // D. StreamRuby (catches direct IP 45.x.x.x, 185.x.x.x)
             else if (embedUrl.includes('rubystm') || embedUrl.includes('streamruby')) {
                 const res = await extractStreamRuby(embedUrl);
                 streams.push(...res);
             }
-            // E. Universal Fallback
+            // E. Universal Fallback (catches FileMoon/premilkyway)
             else {
                  const res = await extractUniversal(embedUrl);
                  streams.push(...res);
@@ -178,7 +179,6 @@ async function extractAWSStream(url) {
         const domain = u.origin;
         const hash = u.pathname.split('/').pop();
         const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
-        // Exact Kotlin Body: hash={hash}&r={mainUrl}
         const body = `hash=${hash}&r=${domain}`;
 
         const jsonText = await req(apiUrl, {
@@ -190,7 +190,6 @@ async function extractAWSStream(url) {
         const json = JSON.parse(jsonText);
         if (json && json.videoSource && json.videoSource !== '0') {
             const name = url.includes('zephyr') ? "ToonStream [Zephyr]" : "ToonStream [AWS]";
-            // Priority: Pass true to force inclusion of Master Playlist for Multi-Audio
             return await parseHLS(json.videoSource, { "Referer": "" }, name, true);
         }
     } catch (e) { }
@@ -205,7 +204,11 @@ async function extractVidStack(url, name) {
         
         const jsonText = await req(apiUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            headers: { 
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': url,
+                'Origin': u.origin
+            },
             body: `r=${encodeURIComponent(url)}&d=${u.hostname}`
         });
         
@@ -213,13 +216,27 @@ async function extractVidStack(url, name) {
         if (json && json.data && Array.isArray(json.data)) {
             const res = [];
             for (const item of json.data) {
-                if (item.file && item.file.includes('.m3u8')) {
-                    // Force master playlist for VidStack to support audio switching
+                // Catches strmupcdn.cc links
+                if (item.file && (item.file.includes('.m3u8') || item.type === 'hls')) {
                     const qualities = await parseHLS(item.file, { "Referer": url }, name, true);
                     res.push(...qualities);
                 }
             }
             return res;
+        }
+    } catch (e) {}
+    return [];
+}
+
+async function extractStreamRuby(url) {
+    try {
+        const cleanUrl = url.replace('/e/', '/');
+        const html = await req(cleanUrl);
+        // Relaxed regex to catch "file:" or "source:" with variable spacing
+        const match = html.match(/(?:file|source)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        if (match) {
+            // Catches 45.x.x.x and 185.x.x.x IP links
+            return await parseHLS(match[1], { "Referer": "https://streamruby.com/" }, "ToonStream [Ruby]", true);
         }
     } catch (e) {}
     return [];
@@ -232,7 +249,6 @@ async function extractGDMirrorBot(url) {
         let host = u.origin;
         let sid = "";
 
-        // 1. Key Logic
         if (url.includes("key=")) {
             const pageText = await req(url);
             if (!pageText) return [];
@@ -274,7 +290,6 @@ async function extractGDMirrorBot(url) {
 
         if (!jsonText) return [];
         const data = JSON.parse(jsonText);
-        
         if (!data.siteUrls || !data.mresult) return [];
 
         const siteUrls = data.siteUrls; 
@@ -295,14 +310,8 @@ async function extractGDMirrorBot(url) {
                 const fullUrl = `${base}/${path}`;
                 const name = friendlyNames[key] || key;
                 
-                if (name === "StreamHG" || name === "EarnVids" || fullUrl.includes('vidhide')) {
-                     const subRes = await extractUniversal(fullUrl, "ToonStream [VidHide]");
-                     res.push(...subRes);
-                } else if (name === "RpmShare" || name === "UpnShare" || name === "StreamP2p") {
+                if (name === "RpmShare" || name === "UpnShare" || name === "StreamP2p") {
                      const subRes = await extractVidStack(fullUrl, `ToonStream [${name}]`);
-                     res.push(...subRes);
-                } else if (fullUrl.includes('wish')) {
-                     const subRes = await extractUniversal(fullUrl, "ToonStream [StreamWish]");
                      res.push(...subRes);
                 } else {
                      const subRes = await extractUniversal(fullUrl, `ToonStream [${name}]`);
@@ -314,18 +323,7 @@ async function extractGDMirrorBot(url) {
     return res;
 }
 
-async function extractStreamRuby(url) {
-    try {
-        const cleanUrl = url.replace('/e/', '/');
-        const html = await req(cleanUrl);
-        const match = html.match(/file:\s*"(.*?m3u8.*?)"/);
-        if (match) {
-            return await parseHLS(match[1], { "Referer": "https://streamruby.com/" }, "ToonStream [Ruby]");
-        }
-    } catch (e) {}
-    return [];
-}
-
+// Catches FileMoon (premilkyway), StreamWish, Dood, etc.
 async function extractUniversal(url, customName = null) {
     const res = [];
     try {
@@ -336,11 +334,18 @@ async function extractUniversal(url, customName = null) {
         if (!html) return [];
         
         let content = html;
-        const packerRegex = /(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/;
-        const packed = content.match(packerRegex);
-        if (packed) {
-            const unpacked = unpack(packed[1]);
-            if (unpacked) content = unpacked;
+        // Aggressive Unpacking for FileMoon
+        let packedCount = 0;
+        while (packedCount < 3) {
+            const packerRegex = /(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/;
+            const packed = content.match(packerRegex);
+            if (packed) {
+                const unpacked = unpack(packed[1]);
+                if (unpacked && unpacked !== content) {
+                    content = unpacked;
+                    packedCount++;
+                } else break;
+            } else break;
         }
 
         const urlRegex = /["'](?<url>https?:\/\/[^"']+\.m3u8[^"']*)["']/gi;
@@ -349,12 +354,15 @@ async function extractUniversal(url, customName = null) {
             let link = m.groups.url.replace(/\\/g, '');
             if (!res.some(r => r.url === link)) {
                 let name = customName || "ToonStream [HLS]";
+                
+                // Identify source based on URL
                 if (!customName) {
                     if (url.includes('dood')) name = "ToonStream [Dood]";
-                    else if (url.includes('filemoon')) name = "ToonStream [FileMoon]";
+                    else if (url.includes('filemoon') || url.includes('premilkyway')) name = "ToonStream [FileMoon]";
                     else if (url.includes('wish')) name = "ToonStream [Wish]";
                 }
-                const qualities = await parseHLS(link, headers, name);
+                
+                const qualities = await parseHLS(link, headers, name, true);
                 res.push(...qualities);
             }
         }
@@ -363,19 +371,16 @@ async function extractUniversal(url, customName = null) {
 }
 
 // ==========================================================
-// CRITICAL FIX: PARSE HLS WITH FALLBACK
+// UTILS
 // ==========================================================
+
 async function parseHLS(url, headers, sourceName, forceMaster = false) {
     const streams = [];
     let m3u8Content = null;
 
-    try {
-        m3u8Content = await req(url, { headers });
-    } catch (e) {
-        // Fallback if req fails (CORS, etc): Return Master URL
-    }
+    try { m3u8Content = await req(url, { headers }); } catch (e) {}
 
-    // If we couldn't get content, OR if we want to force Master (for Multi-Audio), add the master link
+    // Always fallback to Master URL if content fails or forced
     if (!m3u8Content || forceMaster) {
         streams.push({
             name: sourceName,
@@ -384,13 +389,11 @@ async function parseHLS(url, headers, sourceName, forceMaster = false) {
             url: url,
             headers: headers
         });
-        
-        // If we failed to get content, stop here (we have the link, that's what matters)
         if (!m3u8Content) return streams;
     }
 
     if (m3u8Content.includes("#EXTM3U")) {
-        // If it contains explicit audio definitions and we haven't forced master yet, return master
+        // Detect Multi-Audio and return Master
         if (!forceMaster && (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID"))) {
              return [{
                 name: sourceName,
@@ -427,17 +430,15 @@ async function parseHLS(url, headers, sourceName, forceMaster = false) {
             }
         }
     }
-
-    // If parsing produced nothing (not a master playlist or parsing failed), ensure we return at least the original link
+    
     if (streams.length === 0) {
         streams.push({ name: sourceName, title: "Auto", type: "url", url: url, headers: headers });
     }
 
-    // Sort: Multi-Audio/Auto at Top, then resolutions
     return streams.sort((a, b) => {
         if (a.title.includes("Multi-Audio")) return -1;
         if (b.title.includes("Multi-Audio")) return 1;
-        return 0; // Keep others roughly same
+        return 0; 
     });
 }
 
