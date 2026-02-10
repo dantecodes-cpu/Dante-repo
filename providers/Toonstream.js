@@ -1,5 +1,5 @@
 // ToonStream Provider for Nuvio
-// Version: 13.5 (Full GDMirror Logic + Key Parsing)
+// Version: 14.0 (Multi-Audio Fix + Robust GDMirror)
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -7,7 +7,9 @@ const USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML
 
 async function getStreams(tmdbId, mediaType, season, episode) {
     try {
+        // ---------------------------------------------------------
         // 1. TMDB & SEARCH
+        // ---------------------------------------------------------
         const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
         const tmdbResp = await req(tmdbUrl);
         const tmdbData = JSON.parse(tmdbResp);
@@ -44,7 +46,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         if (!selected) return [];
         let contentUrl = selected.url;
 
+        // ---------------------------------------------------------
         // 2. TV EPISODE LOGIC
+        // ---------------------------------------------------------
         if (mediaType === 'tv') {
             const pageHtml = await req(contentUrl);
             const seasonRegex = new RegExp(`data-post="([^"]+)"[^>]*data-season="([^"]+)"[^>]*>.*?Season\\s*${season}\\b`, 'i');
@@ -79,7 +83,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             }
         }
 
+        // ---------------------------------------------------------
         // 3. EXTRACT PLAYERS
+        // ---------------------------------------------------------
         const playerHtml = await req(contentUrl);
         const embedRegex = /data-src="([^"]+)"/gi;
         const matches = [...playerHtml.matchAll(embedRegex)];
@@ -100,23 +106,31 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             if (!embedUrl || processedUrls.has(embedUrl)) continue;
             processedUrls.add(embedUrl);
             
-            // 4. ROUTING
+            // ---------------------------------------------------------
+            // 4. EXTRACTOR ROUTING
+            // ---------------------------------------------------------
+            
+            // A. AWSStream / Zephyr
             if (embedUrl.includes('awstream') || embedUrl.includes('zephyrflick')) {
                 const res = await extractAWSStream(embedUrl);
                 streams.push(...res);
             }
+            // B. GDMirrorBot / Techinmind (Key Source for Multi-Audio)
             else if (embedUrl.includes('gdmirrorbot') || embedUrl.includes('techinmind')) {
                 const res = await extractGDMirrorBot(embedUrl);
                 streams.push(...res);
             }
+            // C. StreamRuby
             else if (embedUrl.includes('rubystm') || embedUrl.includes('streamruby')) {
                 const res = await extractStreamRuby(embedUrl);
                 streams.push(...res);
             }
+            // D. Cloudy / VidStack
             else if (embedUrl.includes('cloudy') || embedUrl.includes('upns.one')) {
                 const res = await extractVidStack(embedUrl, "ToonStream [Cloudy]");
                 streams.push(...res);
             }
+            // E. Universal Fallback
             else {
                  const res = await extractUniversal(embedUrl);
                  streams.push(...res);
@@ -155,7 +169,7 @@ async function resolveInternalEmbed(url, referer) {
 }
 
 // ==========================================================
-// EXTRACTORS
+// SPECIFIC EXTRACTORS
 // ==========================================================
 
 async function extractAWSStream(url) {
@@ -180,7 +194,6 @@ async function extractAWSStream(url) {
     return [];
 }
 
-// Full Port of GDMirrorbot.kt (handles key= logic)
 async function extractGDMirrorBot(url) {
     const res = [];
     try {
@@ -188,56 +201,41 @@ async function extractGDMirrorBot(url) {
         let host = u.origin;
         let sid = "";
 
-        // 1. Handle Complex Logic (URL contains 'key=')
+        // 1. Handle Key-based URLs (Complex)
         if (url.includes("key=")) {
             const pageText = await req(url);
             if (!pageText) return [];
 
-            const finalIdMatch = pageText.match(/FinalID\s*=\s*"([^"]+)"/);
-            const myKeyMatch = pageText.match(/myKey\s*=\s*"([^"]+)"/);
-            const idTypeMatch = pageText.match(/idType\s*=\s*"([^"]+)"/); // defaults to imdbid
+            const finalId = (pageText.match(/FinalID\s*=\s*"([^"]+)"/) || [])[1];
+            const myKey = (pageText.match(/myKey\s*=\s*"([^"]+)"/) || [])[1];
+            const idType = (pageText.match(/idType\s*=\s*"([^"]+)"/) || [])[1] || "imdbid";
             const baseUrlMatch = pageText.match(/let\s+baseUrl\s*=\s*"([^"]+)"/);
-
-            const finalId = finalIdMatch ? finalIdMatch[1] : null;
-            const myKey = myKeyMatch ? myKeyMatch[1] : null;
-            const idType = idTypeMatch ? idTypeMatch[1] : "imdbid";
             
-            if (baseUrlMatch && baseUrlMatch[1]) {
-                try { host = new URL(baseUrlMatch[1]).origin; } catch(e){}
-            }
+            if (baseUrlMatch) try { host = new URL(baseUrlMatch[1]).origin; } catch(e){}
 
             if (finalId && myKey) {
                 let apiUrl = "";
-                // Check if it's a TV show (contains /tv/)
                 if (url.includes("/tv/")) {
-                    const seasonMatch = url.match(/\/tv\/\d+\/(\d+)\//);
-                    const episodeMatch = url.match(/\/tv\/\d+\/\d+\/(\d+)/);
-                    const season = seasonMatch ? seasonMatch[1] : "1";
-                    const episode = episodeMatch ? episodeMatch[1] : "1";
+                    const season = (url.match(/\/tv\/\d+\/(\d+)\//) || [])[1] || "1";
+                    const episode = (url.match(/\/tv\/\d+\/\d+\/(\d+)/) || [])[1] || "1";
                     apiUrl = `${host}/myseriesapi?tmdbid=${finalId}&season=${season}&epname=${episode}&key=${myKey}`;
                 } else {
                     apiUrl = `${host}/mymovieapi?${idType}=${finalId}&key=${myKey}`;
                 }
                 
-                // Get the real file data from the API
                 const apiText = await req(apiUrl);
                 if (apiText) {
                     const apiJson = JSON.parse(apiText);
-                    // Extract fileslug from data[0]
-                    if (apiJson.data && apiJson.data.length > 0 && apiJson.data[0].fileslug) {
-                        sid = apiJson.data[0].fileslug;
-                    }
+                    if (apiJson.data && apiJson.data.length > 0) sid = apiJson.data[0].fileslug;
                 }
             }
         } 
         
-        // 2. Handle Simple Logic (Sid is in URL)
-        if (!sid) {
-             sid = url.split('/').pop();
-        }
+        // 2. Handle Simple URLs
+        if (!sid) sid = url.split('/').pop();
+        if (!sid) return [];
 
         // 3. Call EmbedHelper
-        if (!sid) return [];
         const helperUrl = `${host}/embedhelper.php`;
         const jsonText = await req(helperUrl, {
             method: 'POST',
@@ -251,10 +249,15 @@ async function extractGDMirrorBot(url) {
         if (!data.siteUrls || !data.mresult) return [];
 
         const siteUrls = data.siteUrls; 
-        const mresultDecoded = atob(data.mresult);
-        const mresult = JSON.parse(mresultDecoded); 
-        const friendlyNames = data.siteFriendlyNames || {};
+        // FIX: Handle mresult being object OR base64 string
+        let mresult = {};
+        if (typeof data.mresult === 'object') {
+            mresult = data.mresult;
+        } else {
+            try { mresult = JSON.parse(atob(data.mresult)); } catch(e) {}
+        }
 
+        const friendlyNames = data.siteFriendlyNames || {};
         const keys = Object.keys(siteUrls);
         
         for (const key of keys) {
@@ -264,15 +267,18 @@ async function extractGDMirrorBot(url) {
                 const fullUrl = `${base}/${path}`;
                 const name = friendlyNames[key] || key;
                 
-                // Route based on friendly name (from Extractors.kt)
+                // Identify High-Quality / Multi-Audio Hosts
                 if (name === "StreamHG" || name === "EarnVids" || fullUrl.includes('vidhide')) {
-                     const subRes = await extractUniversal(fullUrl);
+                     const subRes = await extractUniversal(fullUrl, "ToonStream [VidHide]");
                      res.push(...subRes);
                 } else if (name === "RpmShare" || name === "UpnShare" || name === "StreamP2p") {
                      const subRes = await extractVidStack(fullUrl, `ToonStream [${name}]`);
                      res.push(...subRes);
+                } else if (fullUrl.includes('wish')) {
+                     const subRes = await extractUniversal(fullUrl, "ToonStream [StreamWish]");
+                     res.push(...subRes);
                 } else {
-                     const subRes = await extractUniversal(fullUrl);
+                     const subRes = await extractUniversal(fullUrl, `ToonStream [${name}]`);
                      res.push(...subRes);
                 }
             }
@@ -320,7 +326,7 @@ async function extractVidStack(url, name) {
     return [];
 }
 
-async function extractUniversal(url) {
+async function extractUniversal(url, customName = null) {
     const res = [];
     try {
         if (url.includes('awstream') || url.includes('zephyr')) return [];
@@ -342,11 +348,12 @@ async function extractUniversal(url) {
         while ((m = urlRegex.exec(content)) !== null) {
             let link = m.groups.url.replace(/\\/g, '');
             if (!res.some(r => r.url === link)) {
-                let name = "ToonStream [HLS]";
-                if (url.includes('dood')) name = "ToonStream [Dood]";
-                else if (url.includes('filemoon')) name = "ToonStream [FileMoon]";
-                else if (url.includes('wish')) name = "ToonStream [Wish]";
-                else if (url.includes('vidhide') || url.includes('streamhg')) name = "ToonStream [VidHide]";
+                let name = customName || "ToonStream [HLS]";
+                if (!customName) {
+                    if (url.includes('dood')) name = "ToonStream [Dood]";
+                    else if (url.includes('filemoon')) name = "ToonStream [FileMoon]";
+                    else if (url.includes('wish')) name = "ToonStream [Wish]";
+                }
                 
                 const qualities = await parseHLS(link, headers, name);
                 res.push(...qualities);
@@ -357,9 +364,8 @@ async function extractUniversal(url) {
 }
 
 // ==========================================================
-// UTILS
+// CRITICAL FIX: PARSE HLS + AUDIO DETECTION
 // ==========================================================
-
 async function parseHLS(url, headers, sourceName) {
     const streams = [];
     try {
@@ -367,6 +373,19 @@ async function parseHLS(url, headers, sourceName) {
         if (!m3u8Content) return []; 
 
         if (m3u8Content.includes("#EXTM3U")) {
+            // FIX: Detect Multi-Audio in Master Playlist
+            // If the playlist defines Audio Groups, we MUST return the Master URL directly
+            // splitting it into resolutions will lose the audio tracks.
+            if (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID")) {
+                return [{
+                    name: sourceName,
+                    title: "Multi-Audio (Auto)",
+                    type: "url",
+                    url: url,
+                    headers: headers
+                }];
+            }
+
             const lines = m3u8Content.split('\n');
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i].trim();
