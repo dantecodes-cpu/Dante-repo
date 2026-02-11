@@ -18,13 +18,12 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Updated to net22/net52)");
+console.log("[NetMirror] Initializing NetMirror provider (Disney Fix)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// 🚀 UPGRADE: Updated URLs based on working Kotlin files
-const MAIN_URL = "https://net22.cc/"; // Used for Search, Metadata, Auth
-const STREAM_URL = "https://net52.cc/"; // Used for Playlist, Streaming
+const MAIN_URL = "https://net22.cc/"; 
+const STREAM_URL = "https://net52.cc/"; 
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -56,7 +55,6 @@ function getUnixTime() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// 1. UPDATED AUTHENTICATION (Uses MAIN_URL)
 function bypass() {
   const now = Date.now();
   if (globalCookie && cookieTimestamp && now - cookieTimestamp < COOKIE_EXPIRY) {
@@ -102,12 +100,9 @@ function bypass() {
   return attemptBypass(0);
 }
 
-// 2. NEW HELPER: NETFLIX TOKEN GENERATION
-// Kotlin reference: getVideoToken function in Utils.kt
 function getVideoToken(contentId, cookieString) {
     console.log("[NetMirror] Generating secure video token...");
     
-    // Step 1: POST to MAIN_URL/play.php to get 'h' param
     return makeRequest(`${MAIN_URL}play.php`, {
         method: "POST",
         headers: {
@@ -117,18 +112,16 @@ function getVideoToken(contentId, cookieString) {
         },
         body: `id=${contentId}`
     }).then(r => r.json()).then(json => {
-        const hParam = json.h; // e.g., "h=..."
+        const hParam = json.h; 
         
-        // Step 2: GET to STREAM_URL/play.php using 'h' param to get 'data-h' token
         return makeRequest(`${STREAM_URL}play.php?id=${contentId}&${hParam}`, {
             headers: {
                 "Cookie": cookieString,
-                "Referer": `${MAIN_URL}`, // Important: Referer must be main site
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" // Emulate desktop for token
+                "Referer": `${MAIN_URL}`, 
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" 
             }
         });
     }).then(r => r.text()).then(html => {
-        // Extract data-h attribute value
         const match = html.match(/data-h="([^"]+)"/);
         if (match && match[1]) {
             return match[1];
@@ -148,14 +141,12 @@ function searchContent(query, platform) {
       "ott": ott,
       "hd": "on"
     };
-    // Netflix needs user_token for search/browsing in some cases, updated hash from Kotlin
     if (ott === "nf") {
         cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
     }
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // Updated Endpoints to MAIN_URL
     const searchEndpoints = {
       "netflix": `${MAIN_URL}search.php`,
       "primevideo": `${MAIN_URL}pv/search.php`,
@@ -203,7 +194,6 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
     const episodes = [];
     let currentPage = page || 1;
     
-    // Updated Endpoints to MAIN_URL
     const episodesEndpoints = {
       "netflix": `${MAIN_URL}episodes.php`,
       "primevideo": `${MAIN_URL}pv/episodes.php`,
@@ -252,7 +242,6 @@ function loadContent(contentId, platform) {
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
-    // Updated Endpoints to MAIN_URL
     const postEndpoints = {
       "netflix": `${MAIN_URL}post.php`,
       "primevideo": `${MAIN_URL}pv/post.php`,
@@ -315,7 +304,6 @@ function loadContent(contentId, platform) {
   });
 }
 
-// 3. UPDATED STREAMING LOGIC (Uses STREAM_URL & Token)
 function getStreamingLinks(contentId, title, platform) {
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const ottMap = { "netflix": "nf", "primevideo": "pv", "disney": "hs" };
@@ -333,22 +321,26 @@ function getStreamingLinks(contentId, title, platform) {
     let playlistUrl;
     let token = "";
 
-    // IMPORTANT: Netflix now requires a generated token
     if (ott === "nf") {
         try {
             token = await getVideoToken(contentId, cookieString);
-            console.log("Got token:", token);
         } catch (e) {
             console.error("Token generation failed:", e);
         }
     }
     
-    // Updated Endpoints to STREAM_URL (net52.cc)
+    // IMPORTANT: Fix Referer based on Platform
+    // Netflix & Prime: Use STREAM_URL (net52.cc)
+    // Disney: Use MAIN_URL (net22.cc) -> This fixes 'in=unknown'
+    let playlistReferer = STREAM_URL;
+    if (platform.toLowerCase() === "disney") {
+        playlistReferer = MAIN_URL; 
+    }
+
     if (platform.toLowerCase() === "primevideo") playlistUrl = `${STREAM_URL}pv/playlist.php`;
     else if (platform.toLowerCase() === "disney") playlistUrl = `${STREAM_URL}mobile/hs/playlist.php`;
-    else playlistUrl = `${STREAM_URL}playlist.php`; // Netflix
+    else playlistUrl = `${STREAM_URL}playlist.php`; 
 
-    // Add token to query if Netflix
     let finalUrl = `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`;
     if (ott === "nf" && token) {
         finalUrl += `&h=${token}`;
@@ -359,7 +351,7 @@ function getStreamingLinks(contentId, title, platform) {
       {
         headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
-          "Referer": `${STREAM_URL}` // Referer changes to stream domain for playlist
+          "Referer": playlistReferer // Applies the fix
         })
       }
     );
@@ -373,7 +365,6 @@ function getStreamingLinks(contentId, title, platform) {
     const subtitles = [];
     
     playlist.forEach((item) => {
-      // Process Video Sources
       if (item.sources) {
         item.sources.forEach((source) => {
           let fullUrl = source.file;
@@ -384,7 +375,6 @@ function getStreamingLinks(contentId, title, platform) {
           
           try {
               if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
-              // Ensure relative paths use STREAM_URL
               else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, STREAM_URL).href;
           } catch(e) {
               if (!fullUrl.startsWith('http')) fullUrl = STREAM_URL + fullUrl.replace(/^\//, '');
@@ -406,7 +396,6 @@ function getStreamingLinks(contentId, title, platform) {
         });
       }
       
-      // Process Subtitles
       if (item.tracks) {
         item.tracks.filter((track) => track.kind === "captions").forEach((track) => {
           let fullSubUrl = track.file;
@@ -564,7 +553,8 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                     headers: {
                       "User-Agent": BASE_HEADERS["User-Agent"],
                       "Accept": "*/*",
-                      "Referer": STREAM_URL
+                      "Referer": STREAM_URL,
+                      "Cookie": "hd=on" // Added explicit cookie
                     }
                   };
                 });
