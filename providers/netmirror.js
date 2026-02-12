@@ -22,8 +22,8 @@ console.log("[NetMirror] Initializing NetMirror provider (Disney Fix)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-const MAIN_URL = "https://net22.cc/"; 
-const STREAM_URL = "https://net52.cc/"; 
+const MAIN_URL = "https://net22.cc/"; // Search, Metadata, Auth, Disney Referer
+const STREAM_URL = "https://net52.cc/"; // Playlist, Streaming
 
 const BASE_HEADERS = {
   "X-Requested-With": "XMLHttpRequest",
@@ -329,17 +329,20 @@ function getStreamingLinks(contentId, title, platform) {
         }
     }
     
-    // IMPORTANT: Fix Referer based on Platform
-    // Netflix & Prime: Use STREAM_URL (net52.cc)
-    // Disney: Use MAIN_URL (net22.cc) -> This fixes 'in=unknown'
-    let playlistReferer = STREAM_URL;
-    if (platform.toLowerCase() === "disney") {
-        playlistReferer = MAIN_URL; 
+    // Determine Playlist URL and REFERER
+    // FIX: Disney requires MAIN_URL as referer, others accept STREAM_URL or specific paths
+    let reqReferer = STREAM_URL;
+    
+    if (platform.toLowerCase() === "primevideo") {
+        playlistUrl = `${STREAM_URL}pv/playlist.php`;
+        reqReferer = `${STREAM_URL}home`;
+    } else if (platform.toLowerCase() === "disney") {
+        playlistUrl = `${STREAM_URL}mobile/hs/playlist.php`;
+        reqReferer = `${MAIN_URL}`; // CRITICAL FIX: Disney requires net22.cc Referer
+    } else {
+        playlistUrl = `${STREAM_URL}playlist.php`; // Netflix
+        reqReferer = `${STREAM_URL}`;
     }
-
-    if (platform.toLowerCase() === "primevideo") playlistUrl = `${STREAM_URL}pv/playlist.php`;
-    else if (platform.toLowerCase() === "disney") playlistUrl = `${STREAM_URL}mobile/hs/playlist.php`;
-    else playlistUrl = `${STREAM_URL}playlist.php`; 
 
     let finalUrl = `${playlistUrl}?id=${contentId}&t=${encodeURIComponent(title)}&tm=${getUnixTime()}`;
     if (ott === "nf" && token) {
@@ -351,7 +354,7 @@ function getStreamingLinks(contentId, title, platform) {
       {
         headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
           "Cookie": cookieString,
-          "Referer": playlistReferer // Applies the fix
+          "Referer": reqReferer
         })
       }
     );
@@ -373,6 +376,7 @@ function getStreamingLinks(contentId, title, platform) {
              fullUrl = fullUrl.replace("://net52.cc/tv/", "://net52.cc/").replace(/^\/tv\//, "/");
           }
           
+          // Use STREAM_URL (net52) for relative paths
           try {
               if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
               else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, STREAM_URL).href;
@@ -384,14 +388,27 @@ function getStreamingLinks(contentId, title, platform) {
           let label = (source.label || "").toLowerCase();
           
           if (label === "auto" || label === "master") quality = "1080p (Auto)";
-          else if (label.includes("1080") || label.includes("full") || label.includes("fhd") || label.includes("original")) quality = "1080p";
+          else if (label.includes("1080") || label.includes("full") || label.includes("fhd")) quality = "1080p";
           else if (label.includes("720") || label.includes("hd")) quality = "720p";
           else if (label.includes("480") || label.includes("sd")) quality = "480p";
+          
+          // Specific header overrides for streaming
+          const streamHeaders = {
+              "User-Agent": BASE_HEADERS["User-Agent"],
+              "Accept": "*/*",
+              "Referer": STREAM_URL
+          };
+
+          // Disney Fix: Add cookie to stream request (Mirrors Kotlin interceptor)
+          if (platform.toLowerCase() === "disney") {
+              streamHeaders["Cookie"] = "hd=on";
+          }
           
           sources.push({
             url: fullUrl,
             quality: quality,
-            type: source.type || "application/x-mpegURL"
+            type: source.type || "application/x-mpegURL",
+            headers: streamHeaders
           });
         });
       }
@@ -550,12 +567,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                     url: source.url,
                     quality: source.quality,
                     type: "hls", 
-                    headers: {
-                      "User-Agent": BASE_HEADERS["User-Agent"],
-                      "Accept": "*/*",
-                      "Referer": STREAM_URL,
-                      "Cookie": "hd=on" // Added explicit cookie
-                    }
+                    headers: source.headers // Pass strict headers here
                   };
                 });
                 
