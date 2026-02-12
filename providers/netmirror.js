@@ -18,10 +18,11 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Source Title Fix)");
+console.log("[NetMirror] Initializing NetMirror provider (Legacy Logic + New Domains)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
+// Updated Domains
 const MAIN_URL = "https://net22.cc";    // Search, Metadata, Auth
 const STREAM_URL = "https://net52.cc";  // Streaming, Playlist
 
@@ -100,6 +101,7 @@ function bypass() {
   return attemptBypass(0);
 }
 
+// Helper: Netflix Token (Required for net52)
 function getVideoToken(contentId, cookieString) {
     return makeRequest(`${MAIN_URL}/play.php`, {
         method: "POST",
@@ -133,14 +135,13 @@ function searchContent(query, platform) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(function(cookie) {
-    let cookies = {
+    // RESTORED: Sending user_token for ALL platforms (like old JS)
+    const cookies = {
       "t_hash_t": cookie,
+      "user_token": "233123f803cf02184bf6c67e149cdd50", // Updated valid token
       "ott": ott,
       "hd": "on"
     };
-    if (ott === "nf") {
-        cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
-    }
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
@@ -178,12 +179,12 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(function(cookie) {
-    let cookies = {
+    const cookies = {
       "t_hash_t": cookie,
+      "user_token": "233123f803cf02184bf6c67e149cdd50",
       "ott": ott,
       "hd": "on"
     };
-    if (ott === "nf") cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     const episodes = [];
@@ -228,12 +229,12 @@ function loadContent(contentId, platform) {
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(function(cookie) {
-    let cookies = {
+    const cookies = {
       "t_hash_t": cookie,
+      "user_token": "233123f803cf02184bf6c67e149cdd50",
       "ott": ott,
       "hd": "on"
     };
-    if (ott === "nf") cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     
@@ -277,7 +278,7 @@ function loadContent(contentId, platform) {
       return episodePromise.then(function() {
         return {
           id: contentId,
-          title: postData.title, // Internal Source Title
+          title: postData.title, 
           description: postData.desc,
           year: postData.year,
           episodes: allEpisodes,
@@ -289,7 +290,7 @@ function loadContent(contentId, platform) {
     
     return {
       id: contentId,
-      title: postData.title, // Internal Source Title
+      title: postData.title,
       description: postData.desc,
       year: postData.year,
       episodes: allEpisodes,
@@ -300,23 +301,26 @@ function loadContent(contentId, platform) {
 }
 
 function getStreamingLinks(contentId, title, platform) {
-  // IMPORTANT: 'title' here must be the Internal Source Title from post.php, NOT TMDB title.
+  // RESTORED: Using the passed 'title' (which is TMDB title) instead of fetching internal one.
+  // This matches the "Old JS" behavior exactly.
   console.log(`[NetMirror] Getting streaming links for: ${title} (${platform})`);
   const ottMap = { "netflix": "nf", "primevideo": "pv", "disney": "hs" };
   const ott = ottMap[platform.toLowerCase()] || "nf";
   
   return bypass().then(async function(cookie) {
-    let cookies = {
+    // RESTORED: Sending user_token for ALL platforms.
+    const cookies = {
       "t_hash_t": cookie,
+      "user_token": "233123f803cf02184bf6c67e149cdd50",
       "hd": "on",
       "ott": ott
     };
-    if (ott === "nf") cookies["user_token"] = "233123f803cf02184bf6c67e149cdd50";
 
     const cookieString = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
     let playlistUrl;
     let token = "";
 
+    // Netflix still requires the new Token logic (New requirement)
     if (ott === "nf") {
         try {
             token = await getVideoToken(contentId, cookieString);
@@ -325,6 +329,10 @@ function getStreamingLinks(contentId, title, platform) {
         }
     }
     
+    // Referer Logic:
+    // Old JS used 'tv/home' for all.
+    // Kotlin uses 'MAIN_URL/' for Disney, 'STREAM_URL/home' for Prime.
+    // We will use MAIN_URL/ for Disney to be safe across domains.
     let reqReferer = "";
     
     if (platform.toLowerCase() === "primevideo") {
@@ -332,7 +340,7 @@ function getStreamingLinks(contentId, title, platform) {
         reqReferer = `${STREAM_URL}/home`; 
     } else if (platform.toLowerCase() === "disney") {
         playlistUrl = `${STREAM_URL}/mobile/hs/playlist.php`;
-        reqReferer = `${MAIN_URL}/`; // CRITICAL: Fix for in=unknown error (Matches JioHotstarProvider.kt)
+        reqReferer = `${MAIN_URL}/`; // CRITICAL for Disney/Hotstar on net52
     } else {
         playlistUrl = `${STREAM_URL}/playlist.php`;
         reqReferer = `${STREAM_URL}/`;
@@ -370,12 +378,13 @@ function getStreamingLinks(contentId, title, platform) {
              fullUrl = fullUrl.replace("://net52.cc/tv/", "://net52.cc/").replace(/^\/tv\//, "/");
           }
           
-          // Strict Absolute URL Construction
-          if (!fullUrl.startsWith('http')) {
-              const cleanPath = fullUrl.startsWith('/') ? fullUrl.substring(1) : fullUrl;
-              fullUrl = `${STREAM_URL}/${cleanPath}`;
-          } else if (fullUrl.startsWith('//')) {
-              fullUrl = 'https:' + fullUrl;
+          // Strict Absolute URL Construction (Logic from Old JS updated for new domain)
+          try {
+              if (fullUrl.startsWith('//')) fullUrl = 'https:' + fullUrl;
+              else if (!fullUrl.startsWith('http')) fullUrl = new URL(fullUrl, STREAM_URL).href;
+          } catch(e) {
+               // Fallback
+              if (!fullUrl.startsWith('http')) fullUrl = STREAM_URL + fullUrl.replace(/^\//, '');
           }
 
           let quality = "HD";
@@ -386,17 +395,16 @@ function getStreamingLinks(contentId, title, platform) {
           else if (label.includes("720") || label.includes("hd")) quality = "720p";
           else if (label.includes("480") || label.includes("sd")) quality = "480p";
           
-          // Streaming Headers (Cookies are needed for playback)
+          // Streaming Headers
           const streamHeaders = {
               "Accept": "*/*",
-              "Referer": `${STREAM_URL}/`
+              "Referer": `${STREAM_URL}/`,
+              "Cookie": "hd=on" // Ensure HD cookie is always sent (Fix for Disney)
           };
 
           if (platform.toLowerCase() === "disney") {
-              streamHeaders["Cookie"] = "hd=on"; 
               streamHeaders["User-Agent"] = BASE_HEADERS["User-Agent"];
           } else {
-              streamHeaders["Cookie"] = "hd=on";
               streamHeaders["User-Agent"] = "Mozilla/5.0 (Android) ExoPlayer"; 
           }
           
@@ -507,26 +515,23 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
           console.log(`[NetMirror] Selected: ${selectedContent.title} (ID: ${selectedContent.id})`);
           
           return loadContent(selectedContent.id, platform).then(function(contentData) {
-            // FIX: Use the actual Source Title (NetMirror's title) instead of TMDB title for playlist request
-            const sourceTitle = contentData.title;
-
             if (mediaType === "tv" && contentData.isMovie) {
                if (relevantResults.length > 1) {
                   return loadContent(relevantResults[1].id, platform).then(next => {
                       if(next.isMovie) return null;
-                      return processContent(next, relevantResults[1].id, next.title);
+                      return processContent(next, relevantResults[1].id);
                   });
                }
                return null;
             }
-            return processContent(contentData, selectedContent.id, sourceTitle);
+            return processContent(contentData, selectedContent.id);
             
-            function processContent(contentData, contentId, realTitle) {
+            function processContent(contentData, contentId) {
               let targetContentId = contentId;
               
               if (mediaType === "tv" && !contentData.isMovie) {
                 const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
-                episodeData = validEpisodes.find((ep) => {
+                const episodeData = validEpisodes.find((ep) => {
                   let epSeason, epNumber;
                   if (ep.s && ep.ep) {
                     epSeason = parseInt(ep.s.replace("S", ""));
@@ -549,12 +554,12 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 }
               }
               
-              // Pass realTitle (from source) to getStreamingLinks to avoid "in=unknown" errors
-              return getStreamingLinks(targetContentId, realTitle, platform).then(function(streamData) {
+              // RESTORED: Passing 'title' (TMDB Title) instead of internal title.
+              return getStreamingLinks(targetContentId, title, platform).then(function(streamData) {
                 if (!streamData.sources || streamData.sources.length === 0) return null;
                 
                 const streams = streamData.sources.map((source) => {
-                  let streamTitle = `${title} ${source.quality}`; // Display title can remain TMDB title for UI
+                  let streamTitle = `${title} ${source.quality}`;
                   if (mediaType === "tv") {
                     streamTitle += ` S${seasonNum}E${episodeNum}`;
                   }
