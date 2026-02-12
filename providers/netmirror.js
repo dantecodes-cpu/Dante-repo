@@ -18,7 +18,7 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Title & Link Fix)");
+console.log("[NetMirror] Initializing NetMirror provider (Source Title Fix)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
@@ -332,7 +332,7 @@ function getStreamingLinks(contentId, title, platform) {
         reqReferer = `${STREAM_URL}/home`; 
     } else if (platform.toLowerCase() === "disney") {
         playlistUrl = `${STREAM_URL}/mobile/hs/playlist.php`;
-        reqReferer = `${MAIN_URL}/`; // CRITICAL: Fix for in=unknown error
+        reqReferer = `${MAIN_URL}/`; // CRITICAL: Fix for in=unknown error (Matches JioHotstarProvider.kt)
     } else {
         playlistUrl = `${STREAM_URL}/playlist.php`;
         reqReferer = `${STREAM_URL}/`;
@@ -526,7 +526,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
               
               if (mediaType === "tv" && !contentData.isMovie) {
                 const validEpisodes = contentData.episodes.filter((ep) => ep !== null);
-                const episodeData = validEpisodes.find((ep) => {
+                episodeData = validEpisodes.find((ep) => {
                   let epSeason, epNumber;
                   if (ep.s && ep.ep) {
                     epSeason = parseInt(ep.s.replace("S", ""));
@@ -554,7 +554,7 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
                 if (!streamData.sources || streamData.sources.length === 0) return null;
                 
                 const streams = streamData.sources.map((source) => {
-                  let streamTitle = `${title} ${source.quality}`; // Display title can be TMDB title
+                  let streamTitle = `${title} ${source.quality}`; // Display title can remain TMDB title for UI
                   if (mediaType === "tv") {
                     streamTitle += ` S${seasonNum}E${episodeNum}`;
                   }
