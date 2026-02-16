@@ -12,6 +12,52 @@
         "movie",
         "tv"
       ],
+      "filename": "providers/Kuudere.js",
+      "enabled": true,
+      "formats": [
+        "mkv"
+      ],
+      "logo": "https://alienfusiongenerator.com/wp-content/uploads/2024/03/Ben-10-Watch-faces.jpg",
+      "contentLanguage": [
+        "en",
+        "hin",
+        "tel",
+        "etc"
+      ]
+    },
+    {
+      "id": "Animelu",
+      "name": "Animelu",
+      "description": "Yera... Anime chusthavaa",
+      "version": "1.3.6",
+      "author": "Dante",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/animex.js",
+      "enabled": true,
+      "formats": [
+        "mkv"
+      ],
+      "logo": "https://alienfusiongenerator.com/wp-content/uploads/2024/03/Ben-10-Watch-faces.jpg",
+      "contentLanguage": [
+        "en",
+        "hin",
+        "tel",
+        "etc"
+      ]
+    },
+    {
+      "id": "Animelu",
+      "name": "Animelu",
+      "description": "Yera... Anime chusthavaa",
+      "version": "1.3.6",
+      "author": "Dante",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/Animelok.js",
       "enabled": true,
       "formats": [
