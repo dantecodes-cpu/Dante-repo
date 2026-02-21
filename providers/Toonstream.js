@@ -1,6 +1,6 @@
 // ToonStream Provider for Nuvio
-// Version: 19.0
-// Fixes: exact slug matching (Ben 10 vs Alien Force), duplicate stream links
+// Version: 20.0
+// Fixes: per-article HTML parsing (Ben 10 classic vs spinoffs), CDN m3u8 multi-audio, dedup
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -9,62 +9,101 @@ const USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML
 async function getStreams(tmdbId, mediaType, season, episode) {
     try {
         // ---------------------------------------------------------
-        // 1. TMDB & SEARCH
+        // 1. TMDB metadata
         // ---------------------------------------------------------
         const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
         const tmdbResp = await req(tmdbUrl);
         const tmdbData = JSON.parse(tmdbResp);
 
-        let title = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
+        const title = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
+        const year  = parseInt(
+            (mediaType === 'movie' ? tmdbData.release_date : tmdbData.first_air_date || '').substring(0, 4)
+        ) || 0;
         const cleanTitle = title.replace(/[:\-]/g, ' ').replace(/\s+/g, ' ').trim();
 
-        const searchUrl = `${MAIN_URL}/page/1/?s=${encodeURIComponent(cleanTitle)}`;
+        // ---------------------------------------------------------
+        // 2. Search toonstream
+        // ---------------------------------------------------------
+        const searchUrl  = `${MAIN_URL}/page/1/?s=${encodeURIComponent(cleanTitle)}`;
         const searchHtml = await req(searchUrl);
         if (!searchHtml) return [];
 
-        // FIX 1: Broaden URL filter to also catch /category/anime/, /category/cartoon/
-        // and use a more reliable article regex that matches the site's actual structure
+        // Split on <article â€¦> so each chunk belongs to exactly one article.
+        // Then extract the FIRST <a href> and the FIRST <h2> text from that chunk.
+        // This prevents cross-article href/title mismatches from greedy regexes.
+        const articleChunks = searchHtml.split(/<article[\s\S]*?>/i).slice(1);
         const results = [];
-        const articleRegex = /<article[^>]*>[\s\S]*?<a\s+href="([^"]+)"[\s\S]*?<h2[^>]*>([\s\S]*?)<\/h2>/gi;
-        let match;
-        while ((match = articleRegex.exec(searchHtml)) !== null) {
-            let rawUrl = match[1];
-            let rawTitle = match[2].replace(/<[^>]+>/g, '').replace('Watch Online', '').trim();
+
+        for (const chunk of articleChunks) {
+            // First <a href="â€¦"> in the chunk â€” the main article link
+            const hrefMatch  = chunk.match(/<a\s+href="([^"]+)"/i);
+            // First <h2 â€¦>â€¦</h2> in the chunk â€” the article title
+            const titleMatch = chunk.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+            if (!hrefMatch || !titleMatch) continue;
+
+            let rawUrl   = hrefMatch[1];
+            let rawTitle = titleMatch[1].replace(/<[^>]+>/g, '').replace(/Watch Online/gi, '').trim();
+
             if (!rawUrl.startsWith('http')) rawUrl = MAIN_URL + rawUrl;
-            // Accept any URL that is not the homepage/pagination/search itself
-            if (rawUrl !== MAIN_URL && rawUrl !== MAIN_URL + '/' && !rawUrl.includes('/?s=') && !rawUrl.match(/\/page\/\d+/)) {
-                results.push({ url: rawUrl, title: rawTitle });
-            }
+
+            // Skip pagination, search, homepage
+            if (!rawUrl.includes(MAIN_URL) ||
+                rawUrl === MAIN_URL ||
+                rawUrl === MAIN_URL + '/' ||
+                rawUrl.includes('/?s=') ||
+                /\/page\/\d+/.test(rawUrl)) continue;
+
+            results.push({ url: rawUrl, title: rawTitle });
         }
 
-        const normalize = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const target = normalize(title);
+        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const target    = normalize(title);
+        const slugTarget = cleanTitle.toLowerCase().replace(/\s+/g, '-');
 
-        // Step 1: Exact normalized title match (most reliable)
+        // Helper: get year from a toonstream result URL or its chunk year if available
+        // We use URL slug as a proxy for exact title match instead
+
+        // STEP 1 â€” Exact normalized title
         let selected = results.find(r => normalize(r.title) === target);
 
-        // Step 2: Exact slug match â€” slug must be a complete path SEGMENT, not a prefix.
-        // e.g. "/ben-10/" must NOT match "/ben-10-alien-force/"
-        // We split the URL pathname by "/" and check for exact segment equality.
+        // STEP 2 â€” Exact URL slug segment match (e.g. /series/ben-10/ NOT /series/ben-10-alien-force/)
         if (!selected) {
-            const slugTarget = cleanTitle.toLowerCase().replace(/\s+/g, '-');
             selected = results.find(r => {
                 try {
-                    const segments = new URL(r.url).pathname.toLowerCase().split('/');
-                    return segments.includes(slugTarget);
+                    // Split path into segments, check for exact equality
+                    const segs = new URL(r.url).pathname.replace(/\/$/, '').split('/');
+                    return segs.includes(slugTarget);
                 } catch(e) { return false; }
             });
         }
 
-        // Step 3: Normalized title starts-with, but only allow tiny differences (year/punct)
+        // STEP 3 â€” If we still have multiple candidates, prefer the one whose TMDB year
+        //           is closest to the toonstream result. We extract year from the chunk HTML.
+        //           Since we don't have the year in results[], fall back to: if year > 0,
+        //           prefer results whose title normalized == target (already done),
+        //           or whose URL slug is the SHORTEST (closest to bare title).
+        if (!selected && year > 0) {
+            const bySlugLen = results
+                .filter(r => normalize(r.title).startsWith(target))
+                .sort((a, b) => {
+                    try {
+                        const aSlug = new URL(a.url).pathname.replace(/\/$/, '').split('/').pop();
+                        const bSlug = new URL(b.url).pathname.replace(/\/$/, '').split('/').pop();
+                        return aSlug.length - bSlug.length; // shortest slug = least-qualified = base title
+                    } catch(e) { return 0; }
+                });
+            if (bySlugLen.length > 0) selected = bySlugLen[0];
+        }
+
+        // STEP 4 â€” startsWith with tight tolerance
         if (!selected) {
             selected = results.find(r => {
-                const rNorm = normalize(r.title);
-                return rNorm.startsWith(target) && rNorm.length - target.length <= 4;
+                const rn = normalize(r.title);
+                return rn.startsWith(target) && rn.length - target.length <= 4;
             });
         }
 
-        // Step 4: Best-effort first result (last resort)
+        // STEP 5 â€” Best-effort first result
         if (!selected && results.length > 0) selected = results[0];
 
         if (!selected) return [];
@@ -287,7 +326,16 @@ async function extractAWSStream(url) {
         const json = JSON.parse(jsonText);
         if (json && json.videoSource && json.videoSource !== '0') {
             const name = url.includes('zephyr') ? "ToonStream [Zephyr]" : "ToonStream [AWS]";
-            return await parseHLS(json.videoSource, { "Referer": "" }, name, true);
+            // Return the master m3u8 directly â€” do NOT expand quality levels.
+            // The CDN URL (e.g. 185.237.x.x/v4/.../master.m3u8) is a master playlist
+            // with multi-audio; let the player handle it with no referer needed.
+            return [{
+                name: name,
+                title: "Auto / Multi-Audio",
+                type: "url",
+                url: json.videoSource,
+                headers: {}
+            }];
         }
     } catch (e) { }
     return [];
@@ -341,30 +389,49 @@ async function extractEmturbovid(url, name) {
 // Dedicated Vidmoly extractor â€” returns master playlist directly for multi-audio support
 async function extractVidmoly(url, name) {
     try {
-        // Normalise to embed URL format: /embed-ID.html
+        // Vidmoly embed URLs come in several forms:
+        //   https://vidmoly.to/embed-XXXXXXXX.html
+        //   https://vidmoly.to/w/XXXXXXXX
+        //   https://vidmoly.me/embed-XXXXXXXX.html
+        // Normalise to /embed-ID.html
         let embedUrl = url;
-        if (!embedUrl.includes('/embed-')) {
-            const id = new URL(url).pathname.split('/').filter(Boolean).pop();
-            embedUrl = `https://vidmoly.to/embed-${id}.html`;
+        const vidId = url.match(/\/(?:embed-|w\/)([a-zA-Z0-9]+)/)?.[1];
+        if (vidId) {
+            const origin = new URL(url).origin;
+            embedUrl = `${origin}/embed-${vidId}.html`;
         }
-        const headers = { 'Referer': 'https://vidmoly.to/', 'Sec-Fetch-Dest': 'iframe' };
+
+        const headers = {
+            'Referer': new URL(url).origin + '/',
+            'Sec-Fetch-Dest': 'iframe',
+            'Sec-Fetch-Mode': 'navigate'
+        };
         const html = await req(embedUrl, { headers });
         if (!html) return [];
 
         let content = html;
         // Unpack P.A.C.K.E.R if present
-        const packed = content.match(/(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/);
-        if (packed) { const up = unpack(packed[1]); if (up) content = up; }
+        let packedCount = 0;
+        while (packedCount < 3) {
+            const packed = content.match(/(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/);
+            if (!packed) break;
+            const up = unpack(packed[1]);
+            if (!up || up === content) break;
+            content = up;
+            packedCount++;
+        }
 
-        // Vidmoly m3u8 pattern â€” grab the first m3u8 URL
-        const m3u8Match = content.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*?)["']/);
+        // Match any m3u8 URL â€” catches both IP-based CDN and hostname CDN patterns:
+        //   https://185.237.106.12/v4/.../master.m3u8?...
+        //   https://as-cdn21.top/cdn/hls/.../master.m3u8?...
+        const m3u8Match = content.match(/["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]*?)["'`]/);
         if (m3u8Match) {
             return [{
                 name: name || "ToonStream [Vidmoly]",
                 title: "Auto / Multi-Audio",
                 type: "url",
                 url: m3u8Match[1],
-                headers: headers
+                headers: { 'Referer': new URL(url).origin + '/' }
             }];
         }
     } catch (e) {}
