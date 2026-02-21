@@ -1,6 +1,6 @@
 // ToonStream Provider for Nuvio
-// Version: 18.0 (Fixed - Aligned with Phisher98 Commit 0e6df7b)
-// Fixes: player selector, internal embed resolution, search filter, season/episode regex
+// Version: 19.0
+// Fixes: exact slug matching (Ben 10 vs Alien Force), duplicate stream links
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -40,25 +40,44 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const normalize = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
         const target = normalize(title);
 
+        // Step 1: Exact normalized title match (most reliable)
         let selected = results.find(r => normalize(r.title) === target);
+
+        // Step 2: Exact slug match â€” slug must be a complete path SEGMENT, not a prefix.
+        // e.g. "/ben-10/" must NOT match "/ben-10-alien-force/"
+        // We split the URL pathname by "/" and check for exact segment equality.
         if (!selected) {
             const slugTarget = cleanTitle.toLowerCase().replace(/\s+/g, '-');
-            selected = results.find(r => r.url.toLowerCase().includes(slugTarget));
+            selected = results.find(r => {
+                try {
+                    const segments = new URL(r.url).pathname.toLowerCase().split('/');
+                    return segments.includes(slugTarget);
+                } catch(e) { return false; }
+            });
         }
-        if (!selected) selected = results.find(r => normalize(r.title).startsWith(target));
-        if (!selected && results.length > 0) selected = results[0]; // Best-effort fallback
+
+        // Step 3: Normalized title starts-with, but only allow tiny differences (year/punct)
+        if (!selected) {
+            selected = results.find(r => {
+                const rNorm = normalize(r.title);
+                return rNorm.startsWith(target) && rNorm.length - target.length <= 4;
+            });
+        }
+
+        // Step 4: Best-effort first result (last resort)
+        if (!selected && results.length > 0) selected = results[0];
 
         if (!selected) return [];
         let contentUrl = selected.url;
 
         // ---------------------------------------------------------
-        // 2. TV EPISODE LOGIC (AJAX) — mirrors Kotlin exactly
+        // 2. TV EPISODE LOGIC (AJAX) â€” mirrors Kotlin exactly
         // ---------------------------------------------------------
         if (mediaType === 'tv') {
             const pageHtml = await req(contentUrl);
             if (!pageHtml) return [];
 
-            // FIX 2: More robust season matching — find all season tabs, then match by number
+            // FIX 2: More robust season matching â€” find all season tabs, then match by number
             // The Kotlin iterates all <a> with data-post & data-season, we do the same
             const seasonTabRegex = /data-post="(\d+)"[^>]*data-season="(\d+)"[^>]*>([\s\S]*?)(?=data-post=|<\/ul>)/gi;
             let postId = null, seasonId = null;
@@ -102,7 +121,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
             if (!ajaxHtml) return [];
 
-            // FIX 3: More robust episode regex — handles single digits and variable whitespace
+            // FIX 3: More robust episode regex â€” handles single digits and variable whitespace
             // Format on site: <span class="num-epi">1x01</span> or similar
             const epRegex = /<span[^>]*class="num-epi"[^>]*>(\d+)x(\d+)<\/span>[\s\S]*?<a\s+href="([^"]+)"/gi;
             let epMatch, foundEpUrl = null;
@@ -126,7 +145,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         }
 
         // ---------------------------------------------------------
-        // 3. EXTRACT PLAYERS — mirrors Kotlin's loadLinks exactly
+        // 3. EXTRACT PLAYERS â€” mirrors Kotlin's loadLinks exactly
         // ---------------------------------------------------------
         const playerHtml = await req(contentUrl);
         if (!playerHtml) return [];
@@ -185,13 +204,26 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                 const res = await extractEmturbovid(embedUrl, "ToonStream [Emturbo]");
                 streams.push(...res);
             }
+            else if (embedUrl.includes('vidmoly')) {
+                const res = await extractVidmoly(embedUrl, "ToonStream [Vidmoly]");
+                streams.push(...res);
+            }
             else {
                 const res = await extractUniversal(embedUrl, null);
                 streams.push(...res);
             }
         }
 
-        return streams;
+        // Deduplicate final streams by URL â€” prevents double entries from
+        // resolveInternalEmbed fallback + specific extractor both firing
+        const seen = new Set();
+        const dedupedStreams = streams.filter(s => {
+            if (!s.url || seen.has(s.url)) return false;
+            seen.add(s.url);
+            return true;
+        });
+
+        return dedupedStreams;
 
     } catch (e) {
         console.error("[ToonStream] Error:", e);
@@ -306,6 +338,39 @@ async function extractEmturbovid(url, name) {
     return [];
 }
 
+// Dedicated Vidmoly extractor â€” returns master playlist directly for multi-audio support
+async function extractVidmoly(url, name) {
+    try {
+        // Normalise to embed URL format: /embed-ID.html
+        let embedUrl = url;
+        if (!embedUrl.includes('/embed-')) {
+            const id = new URL(url).pathname.split('/').filter(Boolean).pop();
+            embedUrl = `https://vidmoly.to/embed-${id}.html`;
+        }
+        const headers = { 'Referer': 'https://vidmoly.to/', 'Sec-Fetch-Dest': 'iframe' };
+        const html = await req(embedUrl, { headers });
+        if (!html) return [];
+
+        let content = html;
+        // Unpack P.A.C.K.E.R if present
+        const packed = content.match(/(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/);
+        if (packed) { const up = unpack(packed[1]); if (up) content = up; }
+
+        // Vidmoly m3u8 pattern â€” grab the first m3u8 URL
+        const m3u8Match = content.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*?)["']/);
+        if (m3u8Match) {
+            return [{
+                name: name || "ToonStream [Vidmoly]",
+                title: "Auto / Multi-Audio",
+                type: "url",
+                url: m3u8Match[1],
+                headers: headers
+            }];
+        }
+    } catch (e) {}
+    return [];
+}
+
 async function extractGDMirrorBot(url) {
     const res = [];
     try {
@@ -394,7 +459,10 @@ async function extractGDMirrorBot(url) {
 async function extractUniversal(url, customName = null) {
     const res = [];
     try {
-        if (url.includes('awstream') || url.includes('zephyr')) return [];
+        // Skip domains that have dedicated extractors â€” they'd produce duplicates
+        const dedicated = ['awstream', 'zephyrflick', 'zephyr', 'emturbovid', 'embturbovid',
+                           'gdmirrorbot', 'techinmind', 'upns.one', 'cloudy', 'vidmoly'];
+        if (dedicated.some(d => url.includes(d))) return [];
 
         const headers = { 'Referer': url };
         const html = await req(url, { headers });
@@ -449,30 +517,33 @@ async function extractUniversal(url, customName = null) {
 // ==========================================================
 async function parseHLS(url, headers, sourceName, forceMaster = false) {
     const streams = [];
-    let m3u8Content = null;
 
-    try { m3u8Content = await req(url, { headers }); } catch (e) {}
-
-    if (!m3u8Content || forceMaster) {
-        streams.push({
+    // When forceMaster is true, return ONLY the master playlist URL.
+    // Do NOT fetch and parse it â€” that would yield individual quality tracks
+    // which fail because they need the master's session/headers to resolve.
+    // Zephyr, Vidmoly, AWSStream etc. all benefit from this: the player
+    // receives the master m3u8 directly and handles multi-audio itself.
+    if (forceMaster) {
+        return [{
             name: sourceName,
             title: "Auto / Multi-Audio",
             type: "url",
             url: url,
             headers: headers
-        });
-        if (!m3u8Content) return streams;
+        }];
+    }
+
+    let m3u8Content = null;
+    try { m3u8Content = await req(url, { headers }); } catch (e) {}
+
+    if (!m3u8Content) {
+        return [{ name: sourceName, title: "Auto", type: "url", url: url, headers: headers }];
     }
 
     if (m3u8Content.includes("#EXTM3U")) {
-        if (!forceMaster && (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID"))) {
-            return [{
-                name: sourceName,
-                title: "Auto / Multi-Audio",
-                type: "url",
-                url: url,
-                headers: headers
-            }];
+        // Master playlist with audio groups â€” hand it directly to the player
+        if (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID")) {
+            return [{ name: sourceName, title: "Auto / Multi-Audio", type: "url", url: url, headers: headers }];
         }
 
         const lines = m3u8Content.split('\n');
@@ -506,11 +577,7 @@ async function parseHLS(url, headers, sourceName, forceMaster = false) {
         streams.push({ name: sourceName, title: "Auto", type: "url", url: url, headers: headers });
     }
 
-    return streams.sort((a, b) => {
-        if (a.title.includes("Multi-Audio")) return -1;
-        if (b.title.includes("Multi-Audio")) return 1;
-        return 0;
-    });
+    return streams;
 }
 
 // ==========================================================
