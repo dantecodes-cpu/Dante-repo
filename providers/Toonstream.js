@@ -1,6 +1,5 @@
 // ToonStream Provider for Nuvio
-// Version: 19.0 (CloudStream Kotlin Logic Port)
-// Fixed: Path handling, Security Nonce, and Host Resolver
+// Version: 21.0 (Full Kotlin Port: Search + AJAX + Extractors)
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL = "https://toonstream.dad";
@@ -8,21 +7,22 @@ const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 async function getStreams(tmdbId, mediaType, season, episode) {
     try {
-        // 1. GET METADATA
+        // 1. TMDB DATA
         const tmdbResp = await req(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`);
         const tmdbData = JSON.parse(tmdbResp);
-        const title = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
+        const title = (mediaType === 'movie' ? tmdbData.title : tmdbData.name).replace(/[:\-]/g, ' ');
 
-        // 2. SEARCH (Handles both /home/ and root search paths)
-        let searchHtml = await req(`${MAIN_URL}/home/?s=${encodeURIComponent(title)}`) || await req(`${MAIN_URL}/?s=${encodeURIComponent(title)}`);
+        // 2. SEARCH (Kotlin: search method)
+        // Uses: app.get("${mainUrl}/page/$i/?s=$query")
+        let searchHtml = await req(`${MAIN_URL}/page/1/?s=${encodeURIComponent(title)}`);
         if (!searchHtml) return [];
 
         const results = [];
-        // Extracting only Series or Movie links, avoiding categories
-        const searchRegex = /<a href="([^"]+(?:\/series\/|\/movies\/)[^"]+)"[^>]*>(?:<span[^>]*>[^<]*<\/span>)?([^<]+)<\/a>/gi;
+        // Kotlin Selector: "#movies-a > ul > li" 
+        const searchRegex = /<li[^>]*>\s*<article[^>]*>[\s\S]*?<a href="([^"]+)"[\s\S]*?<h2[^>]*>([^<]+)<\/h2>/gi;
         let sMatch;
         while ((sMatch = searchRegex.exec(searchHtml)) !== null) {
-            results.push({ url: sMatch[1], title: sMatch[2].trim() });
+            results.push({ url: sMatch[1], title: sMatch[2].replace('Watch Online', '').trim() });
         }
 
         const normalize = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -32,106 +32,120 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
         let contentUrl = match.url;
 
-        // 3. TV EPISODE LOGIC (Uses the CloudStream AJAX/Nonce method)
+        // 3. TV EPISODE LOGIC (Kotlin: load method - admin-ajax.php)
         if (mediaType === 'tv') {
             const seriesHtml = await req(contentUrl);
-            if (!seriesHtml) return [];
+            const seasonRegex = /<a[^>]*data-post="(\d+)"[^>]*data-season="(\d+)"[^>]*>.*?Season\s*(\d+)\b/gi;
+            let sMatch, dataPost, dataSeason;
+            while ((sMatch = seasonRegex.exec(seriesHtml)) !== null) {
+                if (parseInt(sMatch[3]) == season) {
+                    dataPost = sMatch[1]; dataSeason = sMatch[2]; break;
+                }
+            }
 
-            // Extract the security nonce (standard in DooPlay themes)
-            const nonce = (seriesHtml.match(/"nonce":"([^"]+)"/) || [])[1];
-            const postId = (seriesHtml.match(/data-post="(\d+)"/) || seriesHtml.match(/\?p=(\d+)/) || [])[1];
-            const seasonId = (seriesHtml.match(new RegExp(`data-season="([^"]+)"[^>]*>.*?Season\\s*${season}\\b`, 'i')) || [])[1];
-
-            if (nonce && postId && seasonId) {
-                // Mimicking the CloudStream Kotlin AJAX call
-                const ajaxHtml = await req(`${MAIN_URL}/home/wp-admin/admin-ajax.php`, {
+            if (dataPost && dataSeason) {
+                const ajaxHtml = await req(`${MAIN_URL}/wp-admin/admin-ajax.php`, {
                     method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'X-Requested-With': 'XMLHttpRequest' 
-                    },
-                    body: `action=action_select_season&season=${seasonId}&post=${postId}&nonce=${nonce}`
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+                    body: `action=action_select_season&season=${dataSeason}&post=${dataPost}`
                 });
-
-                if (ajaxHtml) {
-                    const epRegex = new RegExp(`<span class="num-epi">${season}x${episode}<\\/span>[\\s\\S]*?<a href="([^"]+)"`, 'i');
-                    const epMatch = ajaxHtml.match(epRegex);
-                    if (epMatch) contentUrl = epMatch[1];
+                // Kotlin: season.select("article")
+                const epRegex = /<article[^>]*>[\s\S]*?<span class="num-epi">(\d+)x(\d+)<\/span>[\s\S]*?<a href="([^"]+)"/gi;
+                let epM;
+                while ((epM = epRegex.exec(ajaxHtml)) !== null) {
+                    if (parseInt(epM[1]) == season && parseInt(epM[2]) == episode) {
+                        contentUrl = epM[3]; break;
+                    }
                 }
             }
         }
 
-        // 4. EMBED EXTRACTION (Resolving 'trembed' and 'trid')
-        const playerHtml = await req(contentUrl);
-        const trid = (playerHtml.match(/\?p=(\d+)/) || playerHtml.match(/data-post="(\d+)"/) || [])[1];
-        if (!trid) return [];
+        // 4. LOAD LINKS (Kotlin: loadLinks method)
+        const episodeHtml = await req(contentUrl);
+        if (!episodeHtml) return [];
 
+        // Selector: "#aa-options > div > iframe"
+        const iframeRegex = /<iframe[^>]*data-src="([^"]+)"/gi;
+        let iframeMatch;
         const streams = [];
-        const typeParam = mediaType === 'tv' ? '1' : '2';
 
-        // Iterate through players (trembed 0 to 2 covers RubyStream, VidMoly, AWS)
-        for (let i = 0; i < 3; i++) {
-            const embedUrl = `${MAIN_URL}/home/?trembed=${i}&trid=${trid}&trtype=${typeParam}`;
-            const hostHtml = await req(embedUrl, { headers: { 'Referer': contentUrl } });
+        while ((iframeMatch = iframeRegex.exec(episodeHtml)) !== null) {
+            const serverLink = iframeMatch[1];
+            // Get the server page and find the final player iframe
+            const serverHtml = await req(serverLink, { headers: { 'Referer': contentUrl } });
+            const finalIframe = serverHtml?.match(/<iframe[^>]*src=["']([^"']+)["']/i);
             
-            if (hostHtml) {
-                const iframeMatch = hostHtml.match(/<iframe[^>]*src=["']([^"']+)["']/i);
-                if (iframeMatch) {
-                    let realUrl = iframeMatch[1];
-                    if (realUrl.startsWith('//')) realUrl = 'https:' + realUrl;
-                    
-                    // Visit the final host and extract the M3U8
-                    const links = await extractFromHost(realUrl);
-                    if (links) streams.push(...links);
-                }
+            if (finalIframe) {
+                let trueLink = finalIframe[1];
+                if (trueLink.startsWith('//')) trueLink = 'https:' + trueLink;
+                
+                // 5. RUN EXTRACTORS (AWS, Vidmoly, StreamWish, VidHide)
+                const hostLinks = await extractAll(trueLink);
+                if (hostLinks) streams.push(...hostLinks);
             }
         }
 
         return streams;
-    } catch (e) {
-        return [];
-    }
+    } catch (e) { return []; }
 }
 
-// 5. HOST EXTRACTOR (Used by all CloudStream providers)
-async function extractFromHost(url) {
+async function extractAll(url) {
     const res = [];
-    try {
-        const domain = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
-        const html = await req(url, { headers: { 'Referer': MAIN_URL } });
-        if (!html) return null;
+    const html = await req(url, { headers: { 'Referer': MAIN_URL } });
+    if (!html) return null;
 
-        // Searches for master.m3u8 or individual qualities
-        const m3u8Regex = /(https?:\/\/[^"']+\.m3u8[^"']*)/gi;
-        let m;
-        while ((m = m3u8Regex.exec(html)) !== null) {
-            let link = m[1].replace(/\\/g, '');
-            if (link.includes('google') || link.includes('advert')) continue;
+    // A. VIDMOLY / VIDHIDE / STREAMWISH (Packed Unpacker Logic)
+    let content = html;
+    if (html.includes('eval(function(p,a,c,k,e,d)')) {
+        const packed = html.match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\)/);
+        if (packed) content = unpack(packed[0]) || html;
+    }
 
-            res.push({
-                name: `ToonStream [${domain}]`,
-                title: "Auto",
-                type: "url",
-                url: link,
-                headers: { 'Referer': url, 'Origin': new URL(url).origin }
-            });
-        }
-    } catch (e) {}
+    // B. AWSSTREAM / ZEPHYRFLICK (POST method from Kotlin)
+    if (url.includes('awstream') || url.includes('zephyrflick')) {
+        const hash = url.split('/').pop();
+        const jsonText = await req(`${new URL(url).origin}/player/index.php?data=${hash}&do=getVideo`, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `hash=${hash}&r=${encodeURIComponent(new URL(url).origin)}`
+        });
+        const json = JSON.parse(jsonText);
+        if (json?.videoSource) res.push({ name: "AWS", title: "1080p", type: "url", url: json.videoSource });
+    }
+
+    // C. UNIVERSAL M3U8 (Matches all .m3u8 URLs found after unpacking)
+    const m3u8Regex = /["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/gi;
+    let m;
+    while ((m = m3u8Regex.exec(content)) !== null) {
+        let link = m[1].replace(/\\/g, '');
+        if (link.includes('google') || link.includes('advert')) continue;
+        const host = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
+        res.push({
+            name: `ToonStream [${host}]`,
+            title: "Auto",
+            type: "url",
+            url: link,
+            headers: { 'Referer': url, 'Origin': new URL(url).origin }
+        });
+    }
+
     return res.length > 0 ? res : null;
 }
 
+// HELPERS
 async function req(url, opts = {}) {
     try {
-        const response = await fetch(url, { 
-            ...opts, 
-            headers: { 
-                'User-Agent': USER_AGENT, 
-                'Referer': MAIN_URL, 
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                ...opts.headers 
-            } 
-        });
+        const response = await fetch(url, { ...opts, headers: { 'User-Agent': USER_AGENT, 'Referer': MAIN_URL, ...opts.headers } });
         return response.ok ? await response.text() : null;
+    } catch (e) { return null; }
+}
+
+function unpack(p) {
+    try {
+        let params = p.match(/\}\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)/);
+        let [_, payload, radix, count, dict] = params;
+        dict = dict.split('|');
+        return payload.replace(/\b\w+\b/g, (w) => dict[parseInt(w, 36)] || w);
     } catch (e) { return null; }
 }
 
