@@ -21,16 +21,38 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         if (!searchHtml) return [];
 
         // Split HTML on <article> tags so href/title always come from the SAME article.
-        // This prevents cross-article mismatches (the root cause of Ben 10 / Alien Force issue).
+        // CRITICAL: We extract the href from INSIDE the <h2> tag, not the first <a> in the chunk.
+        // The chunk often has category/tag links before the article link, giving wrong URLs.
+        // The <h2><a href="ARTICLE_URL">Title</a></h2> pattern is always the correct link.
         const results = [];
         for (const chunk of searchHtml.split(/<article[\s\S]*?>/i).slice(1)) {
-            const hrefM  = chunk.match(/<a\s+href="([^"]+)"/i);
-            const titleM = chunk.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
-            if (!hrefM || !titleM) continue;
-            let rawUrl   = hrefM[1].startsWith('http') ? hrefM[1] : MAIN_URL + hrefM[1];
-            const rawTitle = titleM[1].replace(/<[^>]+>/g, '').replace(/Watch Online/gi, '').trim();
+            let rawUrl = '', rawTitle = '';
+
+            // Priority 1: href + text from inside <h2><a href="...">Title</a></h2>
+            const h2LinkMatch = chunk.match(/<h2[^>]*>[\s\S]*?<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+            if (h2LinkMatch) {
+                rawUrl   = h2LinkMatch[1];
+                rawTitle = h2LinkMatch[2].replace(/<[^>]+>/g, '').replace(/Watch Online/gi, '').trim();
+            } else {
+                // Priority 2: plain <h2>Title</h2> text + first non-category/tag <a href> in chunk
+                const h2TextMatch = chunk.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+                if (!h2TextMatch) continue;
+                rawTitle = h2TextMatch[1].replace(/<[^>]+>/g, '').replace(/Watch Online/gi, '').trim();
+                for (const [, href] of chunk.matchAll(/<a\s+href="([^"]+)"/gi)) {
+                    if (!href.includes('/category/') && !href.includes('/tag/') &&
+                        !href.includes('/page/') && !href.includes('/?') &&
+                        href !== MAIN_URL && href !== MAIN_URL + '/') {
+                        rawUrl = href; break;
+                    }
+                }
+            }
+
+            if (!rawUrl || !rawTitle) continue;
+            if (!rawUrl.startsWith('http')) rawUrl = MAIN_URL + rawUrl;
             if (rawUrl === MAIN_URL || rawUrl === MAIN_URL + '/' ||
                 rawUrl.includes('/?s=') || /\/page\/\d+/.test(rawUrl)) continue;
+            // Skip individual episode pages â€” we only want series/movie landing pages
+            if (rawUrl.includes('/episode/')) continue;
             results.push({ url: rawUrl, title: rawTitle });
         }
 
