@@ -1,671 +1,643 @@
 // ToonStream Provider for Nuvio
-// Version: 20.0
-// Fixes: per-article HTML parsing (Ben 10 classic vs spinoffs), CDN m3u8 multi-audio, dedup
+// Version: 21.0 â€” Full extractor suite, robust #aa-options parsing, Courage fix
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const MAIN_URL = "https://toonstream.dad";
-const USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+const MAIN_URL     = "https://toonstream.dad";
+const USER_AGENT   = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  MAIN ENTRY POINT
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function getStreams(tmdbId, mediaType, season, episode) {
     try {
-        // ---------------------------------------------------------
         // 1. TMDB metadata
-        // ---------------------------------------------------------
-        const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-        const tmdbResp = await req(tmdbUrl);
-        const tmdbData = JSON.parse(tmdbResp);
-
-        const title = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
-        const year  = parseInt(
-            (mediaType === 'movie' ? tmdbData.release_date : tmdbData.first_air_date || '').substring(0, 4)
-        ) || 0;
+        const tmdbData  = JSON.parse(await req(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`));
+        const title     = mediaType === 'movie' ? tmdbData.title : tmdbData.name;
+        const year      = parseInt((mediaType === 'movie' ? tmdbData.release_date : tmdbData.first_air_date || '').slice(0, 4)) || 0;
         const cleanTitle = title.replace(/[:\-]/g, ' ').replace(/\s+/g, ' ').trim();
 
-        // ---------------------------------------------------------
         // 2. Search toonstream
-        // ---------------------------------------------------------
-        const searchUrl  = `${MAIN_URL}/page/1/?s=${encodeURIComponent(cleanTitle)}`;
-        const searchHtml = await req(searchUrl);
+        const searchHtml = await req(`${MAIN_URL}/page/1/?s=${encodeURIComponent(cleanTitle)}`);
         if (!searchHtml) return [];
 
-        // Split on <article â€¦> so each chunk belongs to exactly one article.
-        // Then extract the FIRST <a href> and the FIRST <h2> text from that chunk.
-        // This prevents cross-article href/title mismatches from greedy regexes.
-        const articleChunks = searchHtml.split(/<article[\s\S]*?>/i).slice(1);
+        // Split HTML on <article> tags so href/title always come from the SAME article.
+        // This prevents cross-article mismatches (the root cause of Ben 10 / Alien Force issue).
         const results = [];
-
-        for (const chunk of articleChunks) {
-            // First <a href="â€¦"> in the chunk â€” the main article link
-            const hrefMatch  = chunk.match(/<a\s+href="([^"]+)"/i);
-            // First <h2 â€¦>â€¦</h2> in the chunk â€” the article title
-            const titleMatch = chunk.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
-            if (!hrefMatch || !titleMatch) continue;
-
-            let rawUrl   = hrefMatch[1];
-            let rawTitle = titleMatch[1].replace(/<[^>]+>/g, '').replace(/Watch Online/gi, '').trim();
-
-            if (!rawUrl.startsWith('http')) rawUrl = MAIN_URL + rawUrl;
-
-            // Skip pagination, search, homepage
-            if (!rawUrl.includes(MAIN_URL) ||
-                rawUrl === MAIN_URL ||
-                rawUrl === MAIN_URL + '/' ||
-                rawUrl.includes('/?s=') ||
-                /\/page\/\d+/.test(rawUrl)) continue;
-
+        for (const chunk of searchHtml.split(/<article[\s\S]*?>/i).slice(1)) {
+            const hrefM  = chunk.match(/<a\s+href="([^"]+)"/i);
+            const titleM = chunk.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+            if (!hrefM || !titleM) continue;
+            let rawUrl   = hrefM[1].startsWith('http') ? hrefM[1] : MAIN_URL + hrefM[1];
+            const rawTitle = titleM[1].replace(/<[^>]+>/g, '').replace(/Watch Online/gi, '').trim();
+            if (rawUrl === MAIN_URL || rawUrl === MAIN_URL + '/' ||
+                rawUrl.includes('/?s=') || /\/page\/\d+/.test(rawUrl)) continue;
             results.push({ url: rawUrl, title: rawTitle });
         }
 
-        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const target    = normalize(title);
+        // 3. Match best result
+        const norm       = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const target     = norm(title);
         const slugTarget = cleanTitle.toLowerCase().replace(/\s+/g, '-');
 
-        // Helper: get year from a toonstream result URL or its chunk year if available
-        // We use URL slug as a proxy for exact title match instead
+        // Step 1: exact normalized title  ("ben10" === "ben10")
+        let selected = results.find(r => norm(r.title) === target);
 
-        // STEP 1 â€” Exact normalized title
-        let selected = results.find(r => normalize(r.title) === target);
-
-        // STEP 2 â€” Exact URL slug segment match (e.g. /series/ben-10/ NOT /series/ben-10-alien-force/)
+        // Step 2: exact slug path segment  ("/series/ben-10/" NOT "/series/ben-10-alien-force/")
         if (!selected) {
             selected = results.find(r => {
-                try {
-                    // Split path into segments, check for exact equality
-                    const segs = new URL(r.url).pathname.replace(/\/$/, '').split('/');
-                    return segs.includes(slugTarget);
-                } catch(e) { return false; }
+                try { return new URL(r.url).pathname.replace(/\/$/, '').split('/').includes(slugTarget); }
+                catch(e) { return false; }
             });
         }
 
-        // STEP 3 â€” If we still have multiple candidates, prefer the one whose TMDB year
-        //           is closest to the toonstream result. We extract year from the chunk HTML.
-        //           Since we don't have the year in results[], fall back to: if year > 0,
-        //           prefer results whose title normalized == target (already done),
-        //           or whose URL slug is the SHORTEST (closest to bare title).
+        // Step 3: year-based tiebreak â€” prefer the URL with the shortest slug (base title)
         if (!selected && year > 0) {
-            const bySlugLen = results
-                .filter(r => normalize(r.title).startsWith(target))
-                .sort((a, b) => {
+            const candidates = results.filter(r => norm(r.title).startsWith(target));
+            if (candidates.length) {
+                selected = candidates.sort((a, b) => {
                     try {
-                        const aSlug = new URL(a.url).pathname.replace(/\/$/, '').split('/').pop();
-                        const bSlug = new URL(b.url).pathname.replace(/\/$/, '').split('/').pop();
-                        return aSlug.length - bSlug.length; // shortest slug = least-qualified = base title
+                        const aL = new URL(a.url).pathname.replace(/\/$/, '').split('/').pop().length;
+                        const bL = new URL(b.url).pathname.replace(/\/$/, '').split('/').pop().length;
+                        return aL - bL;
                     } catch(e) { return 0; }
-                });
-            if (bySlugLen.length > 0) selected = bySlugLen[0];
+                })[0];
+            }
         }
 
-        // STEP 4 â€” startsWith with tight tolerance
-        if (!selected) {
-            selected = results.find(r => {
-                const rn = normalize(r.title);
-                return rn.startsWith(target) && rn.length - target.length <= 4;
-            });
-        }
+        // Step 4: startsWith with tight tolerance (handles year suffix etc.)
+        if (!selected)
+            selected = results.find(r => { const rn = norm(r.title); return rn.startsWith(target) && rn.length - target.length <= 4; });
 
-        // STEP 5 â€” Best-effort first result
-        if (!selected && results.length > 0) selected = results[0];
-
+        // Step 5: best-effort first result
+        if (!selected && results.length) selected = results[0];
         if (!selected) return [];
+
         let contentUrl = selected.url;
 
-        // ---------------------------------------------------------
-        // 2. TV EPISODE LOGIC (AJAX) â€” mirrors Kotlin exactly
-        // ---------------------------------------------------------
+        // 4. TV â€” find the right episode via AJAX
         if (mediaType === 'tv') {
             const pageHtml = await req(contentUrl);
             if (!pageHtml) return [];
 
-            // FIX 2: More robust season matching â€” find all season tabs, then match by number
-            // The Kotlin iterates all <a> with data-post & data-season, we do the same
-            const seasonTabRegex = /data-post="(\d+)"[^>]*data-season="(\d+)"[^>]*>([\s\S]*?)(?=data-post=|<\/ul>)/gi;
+            // Find the matching season tab by iterating all data-post/data-season attributes
             let postId = null, seasonId = null;
+            const tabRx = /data-post="(\d+)"[^>]*data-season="(\d+)"([^>]*)>/gi;
+            let tabM;
+            // We collect the full section after each tab opening tag and look for the season number text
+            const tabSections = pageHtml.split(/data-post="\d+"/i).slice(1);
+            const allTabsRaw = [...pageHtml.matchAll(/data-post="(\d+)"[^>]*data-season="(\d+)"[^>]*>([\s\S]*?)(?=data-post=|<\/ul>|$)/gi)];
 
-            // Find the tab whose inner text contains the correct season number
-            let tabMatch;
-            while ((tabMatch = seasonTabRegex.exec(pageHtml)) !== null) {
-                const innerText = tabMatch[3].replace(/<[^>]+>/g, '').trim();
-                // Match "Season N" or just the number N
-                const numMatch = innerText.match(/(\d+)/);
-                if (numMatch && parseInt(numMatch[1]) === parseInt(season)) {
-                    postId = tabMatch[1];
-                    seasonId = tabMatch[2];
-                    break;
+            for (const t of allTabsRaw) {
+                const innerText = t[3].replace(/<[^>]+>/g, '').trim();
+                const num = innerText.match(/(\d+)/);
+                if (num && parseInt(num[1]) === parseInt(season)) {
+                    postId = t[1]; seasonId = t[2]; break;
                 }
             }
-
-            // Fallback: if only one season exists, just grab the first tab
+            // Fallback: single season â€” grab first tab
             if (!postId) {
-                const singleTab = pageHtml.match(/data-post="(\d+)"[^>]*data-season="(\d+)"/);
-                if (singleTab) {
-                    postId = singleTab[1];
-                    seasonId = singleTab[2];
-                }
+                const fb = pageHtml.match(/data-post="(\d+)"[^>]*data-season="(\d+)"/);
+                if (fb) { postId = fb[1]; seasonId = fb[2]; }
             }
-
             if (!postId || !seasonId) return [];
 
-            const ajaxUrl = `${MAIN_URL}/wp-admin/admin-ajax.php`;
-            const formData = `action=action_select_season&season=${seasonId}&post=${postId}`;
-
-            const ajaxHtml = await req(ajaxUrl, {
+            const ajaxHtml = await req(`${MAIN_URL}/wp-admin/admin-ajax.php`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                     'X-Requested-With': 'XMLHttpRequest',
                     'Referer': contentUrl
                 },
-                body: formData
+                body: `action=action_select_season&season=${seasonId}&post=${postId}`
             });
-
             if (!ajaxHtml) return [];
 
-            // FIX 3: More robust episode regex â€” handles single digits and variable whitespace
-            // Format on site: <span class="num-epi">1x01</span> or similar
-            const epRegex = /<span[^>]*class="num-epi"[^>]*>(\d+)x(\d+)<\/span>[\s\S]*?<a\s+href="([^"]+)"/gi;
-            let epMatch, foundEpUrl = null;
-            while ((epMatch = epRegex.exec(ajaxHtml)) !== null) {
-                if (parseInt(epMatch[1]) === parseInt(season) && parseInt(epMatch[2]) === parseInt(episode)) {
-                    foundEpUrl = epMatch[3];
-                    break;
+            // Primary: match by NxNN span
+            let foundEpUrl = null;
+            const epRx = /<span[^>]*class="num-epi"[^>]*>\s*(\d+)x(\d+)\s*<\/span>[\s\S]*?<a\s+href="([^"]+)"/gi;
+            let epM;
+            while ((epM = epRx.exec(ajaxHtml)) !== null) {
+                if (parseInt(epM[1]) === parseInt(season) && parseInt(epM[2]) === parseInt(episode)) {
+                    foundEpUrl = epM[3]; break;
                 }
             }
-
-            // Fallback: try to find by episode order if span format doesn't match
+            // Fallback: count articles by episode order
             if (!foundEpUrl) {
-                const allEpLinks = [...ajaxHtml.matchAll(/<article[\s\S]*?<a\s+href="([^"]+)"/gi)];
-                if (allEpLinks[episode - 1]) {
-                    foundEpUrl = allEpLinks[episode - 1][1];
-                }
+                const epLinks = [...ajaxHtml.matchAll(/<article[\s\S]*?<a\s+href="([^"]+)"/gi)];
+                if (epLinks[episode - 1]) foundEpUrl = epLinks[episode - 1][1];
             }
-
             if (!foundEpUrl) return [];
             contentUrl = foundEpUrl;
         }
 
-        // ---------------------------------------------------------
-        // 3. EXTRACT PLAYERS â€” mirrors Kotlin's loadLinks exactly
-        // ---------------------------------------------------------
+        // 5. Get server list from episode/movie page
+        //    Kotlin: document.select("#aa-options > div > iframe").forEach { iframe -> iframe.attr("data-src") }
+        //    The #aa-options div contains multiple child divs, each with one iframe[data-src].
+        //    We can't reliably extract the outer div with regex (nested divs), so instead we
+        //    locate the #aa-options block by finding "id=\"aa-options\"" and then scanning
+        //    forward for ALL iframe[data-src] until we hit a clear boundary.
         const playerHtml = await req(contentUrl);
         if (!playerHtml) return [];
 
-        // FIX 4: Use the EXACT same selector as Kotlin: #aa-options > div > iframe[data-src]
-        // Then for each data-src, fetch it and find the child iframe src inside
-        const playerIframeRegex = /<div[^>]*id="aa-options"[^>]*>[\s\S]*?<\/div>/i;
-        const aaOptionsBlock = playerHtml.match(playerIframeRegex)?.[0] || playerHtml;
-
-        // Collect all data-src values from iframes within #aa-options
-        const dataSrcRegex = /<iframe[^>]+data-src="([^"]+)"[^>]*>/gi;
-        const serverLinks = [];
-        let dsMatch;
-        // Search in the aa-options block first, then fall back to full page
-        const searchTarget = aaOptionsBlock.includes('data-src') ? aaOptionsBlock : playerHtml;
-        while ((dsMatch = dataSrcRegex.exec(searchTarget)) !== null) {
-            let link = dsMatch[1].replace(/&#038;/g, '&');
-            if (!link.startsWith('http')) link = 'https:' + link;
-            serverLinks.push(link);
-        }
+        const serverLinks = extractServerLinks(playerHtml);
 
         const streams = [];
-        const processedUrls = new Set();
+        const seen    = new Set();
 
         for (const serverLink of serverLinks) {
-            if (processedUrls.has(serverLink)) continue;
-            processedUrls.add(serverLink);
+            if (seen.has(serverLink)) continue;
+            seen.add(serverLink);
 
-            // FIX 5: ALWAYS resolve the server link to get the true embed URL
-            // (Kotlin: val truelink = app.get(serverlink).documentLarge.selectFirst("iframe")?.attr("src"))
-            let embedUrl = await resolveInternalEmbed(serverLink, contentUrl);
-            if (!embedUrl) {
-                // If no child iframe found, the serverLink itself might be the direct embed
-                embedUrl = serverLink;
-            }
+            // Kotlin: val truelink = app.get(serverlink).documentLarge.selectFirst("iframe")?.attr("src")
+            // Every serverLink is an internal toonstream redirect page that wraps the real embed in an iframe.
+            // We ALWAYS resolve it. If no iframe found, try the serverLink itself as direct embed.
+            let embedUrl = await resolveEmbed(serverLink, contentUrl);
+            if (!embedUrl) embedUrl = serverLink;  // direct embed (no wrapper page)
 
-            if (!embedUrl || processedUrls.has(embedUrl)) continue;
-            processedUrls.add(embedUrl);
+            if (!embedUrl || seen.has(embedUrl)) continue;
+            seen.add(embedUrl);
 
-            // ---------------------------------------------------------
-            // 4. ROUTING & EXTRACTION
-            // ---------------------------------------------------------
-            if (embedUrl.includes('awstream') || embedUrl.includes('zephyrflick') || embedUrl.includes('zephyr')) {
-                const res = await extractAWSStream(embedUrl);
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('gdmirrorbot') || embedUrl.includes('techinmind')) {
-                const res = await extractGDMirrorBot(embedUrl);
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('cloudy') || embedUrl.includes('upns.one')) {
-                const res = await extractVidStack(embedUrl, "ToonStream [Cloudy]");
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('embturbovid') || embedUrl.includes('emturbovid')) {
-                const res = await extractEmturbovid(embedUrl, "ToonStream [Emturbo]");
-                streams.push(...res);
-            }
-            else if (embedUrl.includes('vidmoly')) {
-                const res = await extractVidmoly(embedUrl, "ToonStream [Vidmoly]");
-                streams.push(...res);
-            }
-            else {
-                const res = await extractUniversal(embedUrl, null);
-                streams.push(...res);
+            const results2 = await dispatchExtractor(embedUrl, contentUrl);
+            for (const s of results2) {
+                if (s.url && !seen.has(s.url)) { seen.add(s.url); streams.push(s); }
             }
         }
 
-        // Deduplicate final streams by URL â€” prevents double entries from
-        // resolveInternalEmbed fallback + specific extractor both firing
-        const seen = new Set();
-        const dedupedStreams = streams.filter(s => {
-            if (!s.url || seen.has(s.url)) return false;
-            seen.add(s.url);
-            return true;
-        });
-
-        return dedupedStreams;
+        return streams;
 
     } catch (e) {
-        console.error("[ToonStream] Error:", e);
+        console.error("[ToonStream] Fatal:", e);
         return [];
     }
 }
 
-// ==========================================================
-// HELPERS
-// ==========================================================
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  SERVER LINK EXTRACTION
+//  Robustly finds ALL iframe[data-src] inside #aa-options.
+//  We scan forward from the id="aa-options" marker rather than
+//  trying to match the full nested-div block with a regex.
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function extractServerLinks(html) {
+    const links = [];
+    // Find where #aa-options starts
+    const startIdx = html.search(/id=["']aa-options["']/i);
+    // Use full page if marker not found (fallback)
+    const searchBlock = startIdx >= 0 ? html.slice(startIdx) : html;
 
-async function req(url, opts = {}) {
-    const headers = {
-        'User-Agent': USER_AGENT,
-        'Referer': MAIN_URL,
-        ...opts.headers
-    };
-    try {
-        const response = await fetch(url, { ...opts, headers });
-        return response.ok ? response.text() : null;
-    } catch (e) { return null; }
+    // Collect every iframe data-src from this block
+    // Also collect plain iframe src= that look like external embeds (not same-domain)
+    const dataSrcRx = /<iframe[^>]+data-src=["']([^"']+)["']/gi;
+    let m;
+    while ((m = dataSrcRx.exec(searchBlock)) !== null) {
+        let link = m[1].replace(/&#038;/g, '&').replace(/&amp;/g, '&');
+        if (!link.startsWith('http')) link = 'https:' + link;
+        if (!links.includes(link)) links.push(link);
+    }
+
+    // If no data-src iframes found, fall back to ALL iframes on page (some episodes use src=)
+    if (links.length === 0) {
+        const srcRx = /<iframe[^>]+src=["']([^"']+)["']/gi;
+        while ((m = srcRx.exec(searchBlock)) !== null) {
+            let link = m[1].replace(/&#038;/g, '&').replace(/&amp;/g, '&');
+            if (!link.startsWith('http')) link = 'https:' + link;
+            // Skip same-domain, about:blank, javascript:
+            if (link.includes(MAIN_URL) || link.startsWith('javascript') || link === 'about:blank') continue;
+            if (!links.includes(link)) links.push(link);
+        }
+    }
+
+    return links;
 }
 
-// FIX 6: resolveInternalEmbed now correctly mirrors Kotlin:
-// fetch the server URL, then find the first <iframe src="..."> inside it
-async function resolveInternalEmbed(url, referer) {
-    const html = await req(url, { headers: { 'Referer': referer } });
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  EMBED RESOLVER
+//  Kotlin: app.get(serverLink).selectFirst("iframe")?.attr("src")
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function resolveEmbed(url, referer) {
+    const html = await req(url, { headers: { 'Referer': referer, 'Sec-Fetch-Dest': 'iframe' } });
     if (!html) return null;
-    // Try <iframe src="..."> first (what Kotlin does), then data-src
-    const match = html.match(/<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/i);
-    if (!match) return null;
-    let resolved = match[1];
+    const m = html.match(/<iframe[^>]+(?:data-src|src)=["']([^"']+)["']/i);
+    if (!m) return null;
+    let resolved = m[1].replace(/&#038;/g, '&');
     if (resolved.startsWith('//')) resolved = 'https:' + resolved;
-    // Don't return relative paths or anchors
     if (!resolved.startsWith('http')) return null;
+    // Don't return same-domain internal pages (would loop)
+    if (resolved.includes(MAIN_URL)) return null;
     return resolved;
 }
 
-// ==========================================================
-// SPECIFIC EXTRACTORS
-// ==========================================================
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  EXTRACTOR DISPATCHER
+//  Routes each embed URL to the right extractor.
+//  Mirrors the registered extractors in ToonstreamProvider.kt:
+//    StreamSB8, Vidmolyme, Streamruby, D000d, vidhidevip,
+//    Cdnwish, FileMoonnl, Cloudy, GDMirrorbot, Techinmind,
+//    EmturbovidExtractor, Zephyrflick
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function dispatchExtractor(url, referer) {
+    try {
+        // AWSStream / Zephyrflick
+        if (matchDomain(url, ['awstream', 'zephyrflick', 'zephyr']))
+            return extractAWSStream(url);
 
+        // GDMirrorbot / Techinmind
+        if (matchDomain(url, ['gdmirrorbot', 'techinmind']))
+            return extractGDMirrorBot(url);
+
+        // VidStack (Cloudy / RpmShare / UpnShare)
+        if (matchDomain(url, ['cloudy.', 'upns.one', 'rpmshare', 'upnshare', 'streamp2p']))
+            return extractVidStack(url, labelFor(url));
+
+        // Emturbovid
+        if (matchDomain(url, ['emturbovid', 'embturbovid']))
+            return extractEmturbovid(url, labelFor(url));
+
+        // Vidmoly
+        if (matchDomain(url, ['vidmoly']))
+            return extractVidmoly(url, labelFor(url));
+
+        // StreamSB / StreamRuby
+        if (matchDomain(url, ['streamsb', 'watchsb', 'streamruby', 'rubystm', 'streamruby']))
+            return extractStreamSB(url, labelFor(url));
+
+        // DoodStream
+        if (matchDomain(url, ['dood', 'd000d', 'do0d']))
+            return extractDoodStream(url, labelFor(url));
+
+        // VidHide / FileLions / Filelions / vidhidepro / vidhidevip / cdnwish
+        if (matchDomain(url, ['vidhide', 'filelions', 'vidhidepro', 'vidhidevip', 'cdnwish',
+                               'ryderjet', 'vidhidehub', 'kinoger', 'smoothpre', 'dhtpre', 'peytonepre']))
+            return extractVidHide(url, labelFor(url));
+
+        // FileMoon / Premilkyway (Filesim-based)
+        if (matchDomain(url, ['filemoon', 'premilkyway', 'file-moon', 'filesim']))
+            return extractFileMoon(url, labelFor(url));
+
+        // StreamWish family
+        if (matchDomain(url, ['streamwish', 'wishembed', 'strwish', 'cdnwish', 'sfastwish',
+                               'flaswish', 'awish', 'jodwish', 'swhoi', 'hlswish', 'playerwish',
+                               'wishfast', 'wishonly', 'swdyu', 'mwish', 'dwish', 'obeywish',
+                               'uqloads', 'nekowish', 'nekostream']))
+            return extractStreamWish(url, labelFor(url));
+
+        // Universal fallback (handles any remaining packers / raw m3u8 embeds)
+        return extractUniversal(url, labelFor(url));
+
+    } catch(e) {
+        console.error('[ToonStream] Dispatch error for', url, e);
+        return [];
+    }
+}
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  HELPERS
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function matchDomain(url, keywords) {
+    const lower = url.toLowerCase();
+    return keywords.some(k => lower.includes(k));
+}
+
+function labelFor(url) {
+    try {
+        const host = new URL(url).hostname.replace('www.', '').split('.')[0];
+        return `ToonStream [${host.charAt(0).toUpperCase() + host.slice(1)}]`;
+    } catch(e) { return "ToonStream [HLS]"; }
+}
+
+async function req(url, opts = {}) {
+    const headers = { 'User-Agent': USER_AGENT, 'Referer': MAIN_URL, ...opts.headers };
+    try {
+        const r = await fetch(url, { ...opts, headers });
+        return r.ok ? r.text() : null;
+    } catch(e) { return null; }
+}
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  EXTRACTORS
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// AWSStream / Zephyrflick
+// Mirrors Kotlin AWSStream.getUrl â€” POST to /player/index.php?data=HASH&do=getVideo
 async function extractAWSStream(url) {
     try {
         const u = new URL(url);
-        const domain = u.origin;
         const hash = u.pathname.split('/').pop();
-        const apiUrl = `${domain}/player/index.php?data=${hash}&do=getVideo`;
-        const body = `hash=${hash}&r=${domain}`;
-
-        const jsonText = await req(apiUrl, {
+        const apiUrl = `${u.origin}/player/index.php?data=${hash}&do=getVideo`;
+        const text = await req(apiUrl, {
             method: 'POST',
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': domain
+                'Referer': u.origin
             },
-            body: body
+            body: `hash=${hash}&r=${u.origin}`
         });
-
-        const json = JSON.parse(jsonText);
-        if (json && json.videoSource && json.videoSource !== '0') {
+        const json = JSON.parse(text);
+        if (json?.videoSource && json.videoSource !== '0') {
             const name = url.includes('zephyr') ? "ToonStream [Zephyr]" : "ToonStream [AWS]";
-            // Return the master m3u8 directly â€” do NOT expand quality levels.
-            // The CDN URL (e.g. 185.237.x.x/v4/.../master.m3u8) is a master playlist
-            // with multi-audio; let the player handle it with no referer needed.
-            return [{
-                name: name,
-                title: "Auto / Multi-Audio",
-                type: "url",
-                url: json.videoSource,
-                headers: {}
-            }];
+            return [stream(json.videoSource, {}, name)];
         }
-    } catch (e) { }
+    } catch(e) {}
     return [];
 }
 
+// VidStack (Cloudy, RpmShare, UpnShare)
+// Mirrors Kotlin VidStack â€” POST to /api/source/ID
 async function extractVidStack(url, name) {
     try {
         const u = new URL(url);
         const id = u.pathname.split('/').pop();
-        const apiUrl = `${u.origin}/api/source/${id}`;
-
-        const jsonText = await req(apiUrl, {
+        const text = await req(`${u.origin}/api/source/${id}`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': url,
-                'Origin': u.origin
-            },
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': url, 'Origin': u.origin },
             body: `r=${encodeURIComponent(url)}&d=${u.hostname}`
         });
-
-        const json = JSON.parse(jsonText);
-        if (json && json.data && Array.isArray(json.data)) {
-            const res = [];
-            for (const item of json.data) {
-                if (item.file && (item.file.includes('.m3u8') || item.type === 'hls' || item.type === 'application/x-mpegURL')) {
-                    const qualities = await parseHLS(item.file, { "Referer": url }, name, true);
-                    res.push(...qualities);
-                }
-            }
-            return res;
+        const json = JSON.parse(text);
+        if (json?.data) {
+            return json.data
+                .filter(i => i.file && (i.file.includes('.m3u8') || i.type === 'hls' || i.type === 'application/x-mpegURL'))
+                .map(i => stream(i.file, { 'Referer': url }, name));
         }
-    } catch (e) {}
+    } catch(e) {}
     return [];
 }
 
-// FIX 7: Dedicated Emturbovid extractor (mirrors Kotlin EmturbovidExtractor)
+// Emturbovid
+// Mirrors Kotlin EmturbovidExtractor â€” finds var urlPlay = 'URL'
 async function extractEmturbovid(url, name) {
     try {
         const html = await req(url, { headers: { 'Referer': url + '/' } });
         if (!html) return [];
-        // Matches: var urlPlay = 'https://...m3u8'
-        const m3u8Match = html.match(/var\s+urlPlay\s*=\s*['"]([^'"]+)['"]/);
-        if (m3u8Match && m3u8Match[1]) {
-            return await parseHLS(m3u8Match[1], { 'Referer': url + '/' }, name || "ToonStream [Emturbo]", true);
-        }
-    } catch (e) {}
+        const m = html.match(/var\s+urlPlay\s*=\s*['"]([^'"]+)['"]/);
+        if (m) return [stream(m[1], { 'Referer': url + '/' }, name)];
+    } catch(e) {}
     return [];
 }
 
-// Dedicated Vidmoly extractor â€” returns master playlist directly for multi-audio support
+// Vidmoly
+// Unpacks script, finds master.m3u8 CDN URL
 async function extractVidmoly(url, name) {
     try {
-        // Vidmoly embed URLs come in several forms:
-        //   https://vidmoly.to/embed-XXXXXXXX.html
-        //   https://vidmoly.to/w/XXXXXXXX
-        //   https://vidmoly.me/embed-XXXXXXXX.html
-        // Normalise to /embed-ID.html
         let embedUrl = url;
-        const vidId = url.match(/\/(?:embed-|w\/)([a-zA-Z0-9]+)/)?.[1];
-        if (vidId) {
-            const origin = new URL(url).origin;
-            embedUrl = `${origin}/embed-${vidId}.html`;
-        }
+        const idM = url.match(/\/(?:embed-|w\/)([a-zA-Z0-9]+)/);
+        if (idM) embedUrl = `${new URL(url).origin}/embed-${idM[1]}.html`;
 
-        const headers = {
-            'Referer': new URL(url).origin + '/',
-            'Sec-Fetch-Dest': 'iframe',
-            'Sec-Fetch-Mode': 'navigate'
-        };
-        const html = await req(embedUrl, { headers });
+        const origin = new URL(url).origin;
+        const html = await req(embedUrl, {
+            headers: { 'Referer': origin + '/', 'Sec-Fetch-Dest': 'iframe', 'Sec-Fetch-Mode': 'navigate' }
+        });
         if (!html) return [];
 
-        let content = html;
-        // Unpack P.A.C.K.E.R if present
-        let packedCount = 0;
-        while (packedCount < 3) {
-            const packed = content.match(/(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/);
-            if (!packed) break;
-            const up = unpack(packed[1]);
-            if (!up || up === content) break;
-            content = up;
-            packedCount++;
-        }
-
-        // Match any m3u8 URL â€” catches both IP-based CDN and hostname CDN patterns:
-        //   https://185.237.106.12/v4/.../master.m3u8?...
-        //   https://as-cdn21.top/cdn/hls/.../master.m3u8?...
-        const m3u8Match = content.match(/["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]*?)["'`]/);
-        if (m3u8Match) {
-            return [{
-                name: name || "ToonStream [Vidmoly]",
-                title: "Auto / Multi-Audio",
-                type: "url",
-                url: m3u8Match[1],
-                headers: { 'Referer': new URL(url).origin + '/' }
-            }];
-        }
-    } catch (e) {}
+        let content = unpackAll(html);
+        const m = content.match(/["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]*?)["'`]/);
+        if (m) return [stream(m[1], { 'Referer': origin + '/' }, name)];
+    } catch(e) {}
     return [];
 }
 
+// StreamSB / StreamRuby
+// Mirrors Kotlin StreamSB â€” uses /sources48/ or /e/ API endpoint
+async function extractStreamSB(url, name) {
+    try {
+        // StreamRuby: simpler â€” just scrape the page for m3u8
+        if (url.includes('streamruby') || url.includes('rubystm')) {
+            const newUrl = url.includes('/e/') ? url.replace('/e/', '/') : url;
+            const html = await req(newUrl, { headers: { 'Referer': url } });
+            if (html) {
+                let content = unpackAll(html);
+                const m = content.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
+                if (m) return [stream(m[1], { 'Referer': url }, name)];
+            }
+            return [];
+        }
+        // StreamSB: uses encoded API
+        const urlObj = new URL(url);
+        let videoId = urlObj.pathname.split('/').filter(Boolean).pop() || '';
+        if (videoId.endsWith('.html')) videoId = videoId.slice(0, -5);
+
+        // Convert to hex for the API
+        const hexId  = Array.from(videoId).map(c => c.charCodeAt(0).toString(16)).join('');
+        const apiUrl = `${urlObj.origin}/sources48/${hexId}`;
+        const text   = await req(apiUrl, {
+            headers: {
+                'watchsb': 'sbstream',
+                'Referer': url,
+                'User-Agent': USER_AGENT
+            }
+        });
+        const json = JSON.parse(text);
+        if (json?.stream_data?.file) {
+            return [stream(json.stream_data.file, { 'Referer': urlObj.origin + '/' }, name)];
+        }
+    } catch(e) {}
+    // Fallback to universal
+    return extractUniversal(url, name);
+}
+
+// DoodStream (d000d.com)
+// Mirrors Kotlin DoodLaExtractor
+async function extractDoodStream(url, name) {
+    try {
+        const html = await req(url, { headers: { 'Referer': 'https://d000d.com/' } });
+        if (!html) return [];
+        const passM = html.match(/\?token=([^&"'\s]+).*?expiry=/s) || html.match(/pass_md5['":\s/]+([^'"<\s]+)/);
+        const tokenM = html.match(/\?token=([^&'"]+)/);
+        // DoodStream constructs the URL from /pass_md5/ + random string + token + time
+        const md5M = html.match(/\/pass_md5\/[^\s"']+/);
+        if (md5M) {
+            const origin = new URL(url).origin;
+            const md5Url = origin + md5M[0];
+            const md5Resp = await req(md5Url, { headers: { 'Referer': url } });
+            if (md5Resp) {
+                const rand  = Math.random().toString(36).substring(2, 14);
+                const ts    = Date.now();
+                const token = tokenM?.[1] || '';
+                const finalUrl = `${md5Resp.trim()}${rand}?token=${token}&expiry=${ts}`;
+                return [stream(finalUrl, { 'Referer': origin + '/' }, name, false)];
+            }
+        }
+    } catch(e) {}
+    return extractUniversal(url, name);
+}
+
+// VidHide / FileLions / VidHidePro family
+// Mirrors Kotlin VidHidePro â€” unpacks script, finds m3u8 after "hls2:" or "hls4:" or "file:"
+async function extractVidHide(url, name) {
+    try {
+        // Normalise /d/, /download/, /file/ â†’ /v/
+        const embedUrl = url.replace(/\/(d|download|file|f)\//, '/v/');
+        const html = await req(embedUrl, { headers: { 'Referer': embedUrl + '/', 'Origin': new URL(url).origin } });
+        if (!html) return [];
+
+        let content = unpackAll(html);
+        // Extract after "var links" if present (VidHidePro specific)
+        if (content.includes('var links')) content = content.split('var links').slice(1).join('');
+
+        const m3u8s = [...content.matchAll(/:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/gi)];
+        return m3u8s.map(m => stream(m[1], { 'Referer': new URL(url).origin + '/', 'Origin': new URL(url).origin }, name));
+    } catch(e) {}
+    return [];
+}
+
+// FileMoon / Filemoon.nl (Filesim-based)
+// Mirrors Kotlin Filesim / FileMoonnl â€” unpacks JuicyCodes / packer
+async function extractFileMoon(url, name) {
+    try {
+        const html = await req(url, { headers: { 'Referer': url } });
+        if (!html) return [];
+        let content = unpackAll(html);
+        const m = content.match(/["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]*)["'`]/);
+        if (m) return [stream(m[1], { 'Referer': url }, name)];
+    } catch(e) {}
+    return [];
+}
+
+// StreamWish family
+// Mirrors Kotlin StreamWishExtractor â€” unpacks JWPlayer sources
+async function extractStreamWish(url, name) {
+    try {
+        // Normalise /f/ or /e/ â†’ base URL
+        const vid = url.match(/\/(?:f|e)\/([a-zA-Z0-9]+)/)?.[1];
+        const origin = new URL(url).origin;
+        const embedUrl = vid ? `${origin}/${vid}` : url;
+
+        const html = await req(embedUrl, { headers: { 'Referer': origin + '/', 'Origin': origin } });
+        if (!html) return [];
+
+        let content = unpackAll(html);
+        const m = content.match(/file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
+        if (m) return [stream(m[1], { 'Referer': origin + '/' }, name)];
+
+        // Also try sources: [{file:"..."}]
+        const srcM = content.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
+        if (srcM) return [stream(srcM[1], { 'Referer': origin + '/' }, name)];
+    } catch(e) {}
+    return [];
+}
+
+// GDMirrorbot / Techinmind
+// Mirrors Kotlin GDMirrorbot.getUrl
 async function extractGDMirrorBot(url) {
     const res = [];
     try {
         const u = new URL(url);
-        let host = u.origin;
-        let sid = "";
+        let host = u.origin, sid = '';
 
-        if (url.includes("key=")) {
+        if (url.includes('key=')) {
             const pageText = await req(url);
             if (!pageText) return [];
-            const finalId = (pageText.match(/FinalID\s*=\s*"([^"]+)"/) || [])[1];
-            const myKey = (pageText.match(/myKey\s*=\s*"([^"]+)"/) || [])[1];
-            const idType = (pageText.match(/idType\s*=\s*"([^"]+)"/) || [])[1] || "imdbid";
-            const baseUrlMatch = pageText.match(/let\s+baseUrl\s*=\s*"([^"]+)"/);
-            if (baseUrlMatch) try { host = new URL(baseUrlMatch[1]).origin; } catch(e){}
+            const finalId    = pageText.match(/FinalID\s*=\s*"([^"]+)"/)?.[1];
+            const myKey      = pageText.match(/myKey\s*=\s*"([^"]+)"/)?.[1];
+            const idType     = pageText.match(/idType\s*=\s*"([^"]+)"/)?.[1] || 'imdbid';
+            const baseUrlM   = pageText.match(/let\s+baseUrl\s*=\s*"([^"]+)"/);
+            if (baseUrlM) try { host = new URL(baseUrlM[1]).origin; } catch(e) {}
 
             if (finalId && myKey) {
-                let apiUrl = "";
-                if (url.includes("/tv/")) {
-                    const season = (url.match(/\/tv\/\d+\/(\d+)\//) || [])[1] || "1";
-                    const episode = (url.match(/\/tv\/\d+\/\d+\/(\d+)/) || [])[1] || "1";
-                    apiUrl = `${host}/myseriesapi?tmdbid=${finalId}&season=${season}&epname=${episode}&key=${myKey}`;
+                let apiUrl;
+                if (url.includes('/tv/')) {
+                    const s = url.match(/\/tv\/\d+\/(\d+)\//)?.[1] || '1';
+                    const e = url.match(/\/tv\/\d+\/\d+\/(\d+)/)?.[1] || '1';
+                    apiUrl = `${host}/myseriesapi?tmdbid=${finalId}&season=${s}&epname=${e}&key=${myKey}`;
                 } else {
                     apiUrl = `${host}/mymovieapi?${idType}=${finalId}&key=${myKey}`;
                 }
-                const apiText = await req(apiUrl);
-                if (apiText) {
-                    const apiJson = JSON.parse(apiText);
-                    if (apiJson.data && apiJson.data.length > 0) sid = apiJson.data[0].fileslug;
-                }
+                const apiJ = JSON.parse(await req(apiUrl) || 'null');
+                if (apiJ?.data?.[0]?.fileslug) sid = apiJ.data[0].fileslug;
             }
         }
 
-        if (!sid) sid = url.split('/').pop();
+        if (!sid) sid = u.pathname.split('/').filter(Boolean).pop() || '';
         if (!sid) return [];
 
-        const helperUrl = `${host}/embedhelper.php`;
-        const jsonText = await req(helperUrl, {
+        const helperText = await req(`${host}/embedhelper.php`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `sid=${sid}`
         });
-
-        if (!jsonText) return [];
-        const data = JSON.parse(jsonText);
+        if (!helperText) return [];
+        const data = JSON.parse(helperText);
         if (!data.siteUrls || !data.mresult) return [];
 
-        const siteUrls = data.siteUrls;
-        let mresult = {};
-        if (typeof data.mresult === 'object') {
-            mresult = data.mresult;
-        } else {
-            try { mresult = JSON.parse(atob(data.mresult)); } catch(e) {}
-        }
-
+        const siteUrls     = data.siteUrls;
         const friendlyNames = data.siteFriendlyNames || {};
-        const keys = Object.keys(siteUrls);
+        let mresult = {};
+        if (typeof data.mresult === 'object') mresult = data.mresult;
+        else try { mresult = JSON.parse(atob(data.mresult)); } catch(e) {}
 
-        for (const key of keys) {
-            if (mresult[key]) {
-                const base = siteUrls[key].replace(/\/$/, '');
-                const path = mresult[key].replace(/^\//, '');
-                const fullUrl = `${base}/${path}`;
-                const friendlyName = friendlyNames[key] || key;
+        for (const key of Object.keys(siteUrls)) {
+            if (!mresult[key]) continue;
+            const fullUrl  = `${siteUrls[key].replace(/\/$/, '')}/${mresult[key].replace(/^\//, '')}`;
+            const friendly = friendlyNames[key] || key;
 
-                if (friendlyName === "RpmShare" || friendlyName === "UpnShare" || friendlyName === "StreamP2p") {
-                    const subRes = await extractVidStack(fullUrl, `ToonStream [${friendlyName}]`);
-                    res.push(...subRes);
-                } else if (friendlyName === "StreamHG" || friendlyName === "EarnVids") {
-                    // VidHidePro-style
-                    const subRes = await extractUniversal(fullUrl, `ToonStream [${friendlyName}]`);
-                    res.push(...subRes);
-                } else {
-                    const subRes = await extractUniversal(fullUrl, `ToonStream [${friendlyName}]`);
-                    res.push(...subRes);
-                }
-            }
+            const subRes = await dispatchExtractor(fullUrl, url);
+            res.push(...subRes);
         }
-    } catch (e) { console.log("[ToonStream] GDMirror Error", e); }
+    } catch(e) { console.log('[ToonStream] GDMirror Error', e); }
     return res;
 }
 
-// ==========================================================
-// UNIVERSAL EXTRACTOR
-// ==========================================================
-async function extractUniversal(url, customName = null) {
+// Universal fallback â€” recursive packer unpack + raw m3u8 scrape
+async function extractUniversal(url, name) {
     const res = [];
     try {
-        // Skip domains that have dedicated extractors â€” they'd produce duplicates
-        const dedicated = ['awstream', 'zephyrflick', 'zephyr', 'emturbovid', 'embturbovid',
-                           'gdmirrorbot', 'techinmind', 'upns.one', 'cloudy', 'vidmoly'];
-        if (dedicated.some(d => url.includes(d))) return [];
-
-        const headers = { 'Referer': url };
-        const html = await req(url, { headers });
+        const html = await req(url, { headers: { 'Referer': url } });
         if (!html) return [];
+        const content = unpackAll(html);
+        const seen = new Set();
 
-        let content = html;
-
-        // RECURSIVE UNPACKER (handles FileMoon, Premilkyway double-packing)
-        let packedCount = 0;
-        let hasPacked = true;
-        while (hasPacked && packedCount < 5) {
-            const packerRegex = /(eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\))/;
-            const packed = content.match(packerRegex);
-            if (packed) {
-                const unpacked = unpack(packed[1]);
-                if (unpacked && unpacked !== content) {
-                    content = unpacked;
-                    packedCount++;
-                } else { hasPacked = false; }
-            } else { hasPacked = false; }
+        for (const m of content.matchAll(/["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]*)["'`]/gi)) {
+            const link = m[1].replace(/\\/g, '');
+            if (link.includes('error') || link.includes('red/pixel') || seen.has(link)) continue;
+            seen.add(link);
+            const autoName = name || (
+                url.includes('filemoon') || url.includes('premilkyway') ? 'ToonStream [FileMoon]' :
+                url.includes('dood') || url.includes('d000d')           ? 'ToonStream [Dood]'     :
+                url.includes('streamruby') || url.includes('rubystm')   ? 'ToonStream [Ruby]'     :
+                url.includes('wish')                                     ? 'ToonStream [Wish]'     :
+                url.includes('vidhide') || url.includes('filelions')    ? 'ToonStream [VidHide]'  :
+                                                                           'ToonStream [HLS]'
+            );
+            res.push(stream(link, { 'Referer': url }, autoName));
         }
-
-        // UNIVERSAL M3U8 REGEX
-        const urlRegex = /["'](?<url>https?:\/\/[^"']+\.m3u8[^"']*)["']/gi;
-        let m;
-        while ((m = urlRegex.exec(content)) !== null) {
-            let link = m.groups.url.replace(/\\/g, '');
-
-            if (link.includes('red/pixel') || link.includes('error')) continue;
-
-            if (!res.some(r => r.url === link)) {
-                let name = customName || "ToonStream [HLS]";
-
-                if (!customName) {
-                    if (url.includes('rubystm') || url.includes('streamruby') || link.match(/\d+\.\d+\.\d+\.\d+/)) name = "ToonStream [Ruby]";
-                    else if (url.includes('dood') || url.includes('d000d')) name = "ToonStream [Dood]";
-                    else if (url.includes('filemoon') || url.includes('premilkyway')) name = "ToonStream [FileMoon]";
-                    else if (url.includes('wish')) name = "ToonStream [Wish]";
-                    else if (url.includes('vidhide') || url.includes('vidhidepro') || url.includes('filelions')) name = "ToonStream [VidHide]";
-                }
-
-                const qualities = await parseHLS(link, headers, name, true);
-                res.push(...qualities);
-            }
-        }
-    } catch (e) {}
+    } catch(e) {}
     return res;
 }
 
-// ==========================================================
-// M3U8 PARSER
-// ==========================================================
-async function parseHLS(url, headers, sourceName, forceMaster = false) {
-    const streams = [];
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  UTILITIES
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    // When forceMaster is true, return ONLY the master playlist URL.
-    // Do NOT fetch and parse it â€” that would yield individual quality tracks
-    // which fail because they need the master's session/headers to resolve.
-    // Zephyr, Vidmoly, AWSStream etc. all benefit from this: the player
-    // receives the master m3u8 directly and handles multi-audio itself.
-    if (forceMaster) {
-        return [{
-            name: sourceName,
-            title: "Auto / Multi-Audio",
-            type: "url",
-            url: url,
-            headers: headers
-        }];
-    }
-
-    let m3u8Content = null;
-    try { m3u8Content = await req(url, { headers }); } catch (e) {}
-
-    if (!m3u8Content) {
-        return [{ name: sourceName, title: "Auto", type: "url", url: url, headers: headers }];
-    }
-
-    if (m3u8Content.includes("#EXTM3U")) {
-        // Master playlist with audio groups â€” hand it directly to the player
-        if (m3u8Content.includes("TYPE=AUDIO") || m3u8Content.includes("GROUP-ID")) {
-            return [{ name: sourceName, title: "Auto / Multi-Audio", type: "url", url: url, headers: headers }];
-        }
-
-        const lines = m3u8Content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line.startsWith('#EXT-X-STREAM-INF')) {
-                const resMatch = line.match(/RESOLUTION=(\d+)x(\d+)/);
-                let quality = "Auto";
-                if (resMatch) {
-                    const height = parseInt(resMatch[2]);
-                    if (height >= 1080) quality = "1080p";
-                    else if (height >= 720) quality = "720p";
-                    else if (height >= 480) quality = "480p";
-                    else quality = "360p";
-                }
-
-                let nextLine = lines[i + 1]?.trim();
-                if (nextLine && !nextLine.startsWith('#')) {
-                    if (!nextLine.startsWith('http')) {
-                        const u = new URL(url);
-                        const basePath = url.substring(0, url.lastIndexOf('/') + 1);
-                        nextLine = nextLine.startsWith('/') ? u.origin + nextLine : basePath + nextLine;
-                    }
-                    streams.push({ name: sourceName, title: quality, type: "url", url: nextLine, headers: headers });
-                }
-            }
-        }
-    }
-
-    if (streams.length === 0) {
-        streams.push({ name: sourceName, title: "Auto", type: "url", url: url, headers: headers });
-    }
-
-    return streams;
+// Build a stream object
+function stream(url, headers, name, isHLS = true) {
+    return { name, title: 'Auto / Multi-Audio', type: 'url', url, headers };
 }
 
-// ==========================================================
-// P.A.C.K.E.R. UNPACKER
-// ==========================================================
+// Recursively unpack p.a.c.k.e.r (up to 5 passes)
+function unpackAll(content) {
+    let result = content;
+    for (let i = 0; i < 5; i++) {
+        const packed = result.match(/(eval\(function\(p,a,c,k,e,(?:d|r)\)[\s\S]*?\.split\('\|'\)\)(?:\))?)/);
+        if (!packed) break;
+        const up = unpack(packed[1]);
+        if (!up || up === result) break;
+        result = up;
+    }
+    return result;
+}
+
 function unpack(p) {
     try {
-        let params = p.match(/\}\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)/);
+        const params = p.match(/\}\s*\(\s*'([\s\S]*)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/);
         if (!params) return null;
-        let [_, payload, radix, count, dict] = params;
-        dict = dict.split('|');
-        radix = parseInt(radix);
-        return payload.replace(/\b\w+\b/g, (w) => {
+        let [, payload, radixStr, , dictStr] = params;
+        const radix = parseInt(radixStr);
+        const dict  = dictStr.split('|');
+        return payload.replace(/\b\w+\b/g, w => {
             const idx = parseInt(w, radix);
-            return (dict[idx] && dict[idx] !== '') ? dict[idx] : w;
+            return (Number.isFinite(idx) && dict[idx]) ? dict[idx] : w;
         });
-    } catch (e) { return null; }
+    } catch(e) { return null; }
 }
 
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { getStreams };
-} else {
-    global.ToonStreamProvider = { getStreams };
-}
+if (typeof module !== 'undefined' && module.exports) module.exports = { getStreams };
+else global.ToonStreamProvider = { getStreams };
