@@ -372,6 +372,7 @@ function mkStream(streamUrl, streamHeaders, name, quality) {
         title:   quality || "Auto",
         url:     streamUrl,
         quality: quality || "Auto",
+        type:    "direct",
         headers: streamHeaders || {}
     };
 }
