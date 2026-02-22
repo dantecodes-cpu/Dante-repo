@@ -4,7 +4,7 @@
 // Export: module.exports = { getStreams }
 // Engine: Hermes-compatible (Promise chains, no async/await)
 
-console.log("[ToonStream] Loaded v23.0");
+console.log("[ToonStream] Loaded v24.0");
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var MAIN_URL     = "https://toonstream.dad";
@@ -622,4 +622,10 @@ function unpackOne(p) {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  EXPORT â€” official format per nuvio-providers docs
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-module.exports = { getStreams: getStreams };
+// Export â€” matches NetMirror's exact guard pattern so Nuvio can find getStreams
+// regardless of whether it uses new Function('module','exports',...) or plain eval()
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { getStreams: getStreams };
+} else {
+    global.getStreams = getStreams;
+}
