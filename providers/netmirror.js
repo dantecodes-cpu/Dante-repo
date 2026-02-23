@@ -18,7 +18,7 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
-console.log("[NetMirror] Initializing NetMirror provider (Updated to net52.cc based on latest Kotlin)");
+console.log("[NetMirror] Initializing NetMirror provider (v2 — fixed from CNCVerse Kotlin source)");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 // 🚀 UPGRADE: All providers now point to net52.cc
@@ -110,7 +110,6 @@ function searchContent(query, platform) {
   return bypass().then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
-      "user_token": "233123f803cf02184bf6c67e149cdd50", // Hardcoded token from Kotlin files
       "ott": ott,
       "hd": "on"
     };
@@ -155,7 +154,6 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
   return bypass().then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
-      "user_token": "233123f803cf02184bf6c67e149cdd50",
       "ott": ott,
       "hd": "on"
     };
@@ -176,7 +174,10 @@ function getEpisodesFromSeason(seriesId, seasonId, platform, page) {
         {
           headers: __spreadProps(__spreadValues({}, BASE_HEADERS), {
             "Cookie": cookieString,
-            "Referer": `${NETMIRROR_BASE}/tv/home`
+            // Kotlin PrimeVideo.getEpisodes uses /home, Netflix uses /tv/home
+            "Referer": platform.toLowerCase() === "netflix"
+              ? `${NETMIRROR_BASE}/tv/home`
+              : `${NETMIRROR_BASE}/home`
           })
         }
       ).then(r => r.json()).then(function(episodeData) {
@@ -204,7 +205,6 @@ function loadContent(contentId, platform) {
   return bypass().then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
-      "user_token": "233123f803cf02184bf6c67e149cdd50",
       "ott": ott,
       "hd": "on"
     };
@@ -280,7 +280,6 @@ function getStreamingLinks(contentId, title, platform) {
   return bypass().then(function(cookie) {
     const cookies = {
       "t_hash_t": cookie,
-      "user_token": "233123f803cf02184bf6c67e149cdd50",
       "hd": "on",
       "ott": ott
     };
@@ -345,27 +344,49 @@ function getStreamingLinks(contentId, title, platform) {
               if (!fullUrl.startsWith('http')) fullUrl = NETMIRROR_BASE + '/' + fullUrl;
           }
 
+          // PrimeVideo: quality from URL q= param (Kotlin: getQualityFromName(it.file.substringAfter("q=", "")))
+          // Netflix/HotStar: quality from label
           let quality = "HD";
-          let label = (source.label || "").toLowerCase();
-          
-          if (label === "auto" || label === "master") quality = "1080p (Auto)";
-          else if (label.includes("1080") || label.includes("full") || label.includes("fhd")) quality = "1080p";
-          else if (label.includes("720") || label.includes("hd")) quality = "720p";
-          else if (label.includes("480") || label.includes("sd")) quality = "480p";
+          const qParam = (fullUrl.split("q=")[1] || "").split("&")[0];
+          if (isPrime && qParam) {
+            const qn = parseInt(qParam);
+            if (qn >= 1080) quality = "1080p";
+            else if (qn >= 720) quality = "720p";
+            else if (qn >= 480) quality = "480p";
+            else if (qn >= 360) quality = "360p";
+            else if (qParam) quality = qParam + "p";
+          } else {
+            const label = (source.label || "").toLowerCase();
+            if (label === "auto" || label === "master") quality = "1080p (Auto)";
+            else if (label.includes("1080") || label.includes("full") || label.includes("fhd")) quality = "1080p";
+            else if (label.includes("720") || label.includes("hd")) quality = "720p";
+            else if (label.includes("480") || label.includes("sd")) quality = "480p";
+          }
           
           // Header logic from Kotlin Interceptors
+          // Netflix streams use ExoPlayer UA (from Kotlin NetflixMirrorProvider.loadLinks)
+          // Prime/Disney use interceptor-added Cookie only, quality from URL q= param
+          const isNetflix = platform.toLowerCase() === "netflix";
+          const isPrime   = platform.toLowerCase() === "primevideo";
           const streamHeaders = {
-              "User-Agent": BASE_HEADERS["User-Agent"],
+              "User-Agent": isNetflix
+                  ? "Mozilla/5.0 (Android) ExoPlayer"
+                  : BASE_HEADERS["User-Agent"],
               "Accept": "*/*",
+              "Accept-Encoding": isNetflix ? "identity" : undefined,
               "Referer": `${NETMIRROR_BASE}/`,
-              "Cookie": "hd=on" // Crucial: Kotlin interceptors add this for all m3u8 requests
+              "Cookie": "hd=on" // Kotlin interceptors add this for all m3u8 requests
           };
 
+          // Remove undefined keys (e.g. Accept-Encoding only set for Netflix)
+          const cleanHeaders = Object.fromEntries(
+            Object.entries(streamHeaders).filter(([,v]) => v !== undefined)
+          );
           sources.push({
             url: fullUrl,
             quality: quality,
             type: source.type || "application/x-mpegURL",
-            headers: streamHeaders
+            headers: cleanHeaders
           });
         });
       }
