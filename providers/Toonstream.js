@@ -26,7 +26,7 @@ var __async=(e,n,t)=>new Promise((r,o)=>{
   l((t=t.apply(e,n)).next());
 });
 
-console.log("[ToonStream] v29.0 init");
+console.log("[ToonStream] v29.2 init");
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const MAIN_URL  = "https://toonstream.dad";
@@ -289,18 +289,30 @@ const mk = (url, headers, name, quality="Auto") => ({
 // ─── EXTRACTORS ──────────────────────────────────────────────────────────────
 function extractAWS(url, name) {
   return __async(this, null, function*() {
+    // Match the Kotlin AWSStream/Zephyrflick extractor exactly:
+    //   val extractedHash = url.substringAfterLast("/")
+    //   val m3u8Url = "$mainUrl/player/index.php?data=$extractedHash&do=getVideo"
+    //   val formdata = mapOf("hash" to extractedHash, "r" to mainUrl)
+    // Each host uses its OWN domain as both the API host and the r= param.
+    // Zephyrflick: play.zephyrflick.top  |  AWSStream: z.awstream.net  |  as-cdn21: as-cdn21.top
     const origin = url.match(/^(https?:\/\/[^\/]+)/)[1];
     const hash   = url.split("/").filter(Boolean).pop();
+    const apiUrl = `${origin}/player/index.php?data=${hash}&do=getVideo`;
+    console.log(`[ToonStream] AWS origin=${origin} hash=${hash}`);
     try {
-      const r = yield req(`${origin}/player/index.php?data=${hash}&do=getVideo`, {
+      const r = yield req(apiUrl, {
         method: "POST",
-        headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded", Referer: origin },
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Referer": url
+        },
         body: `hash=${hash}&r=${origin}`
       });
       const j = yield r.json();
       if (j && j.videoSource && j.videoSource !== "0") {
         console.log(`[ToonStream] AWS URL: ${j.videoSource}`);
-        return [mk(j.videoSource, {}, name)];
+        return [mk(j.videoSource, { "Referer": url }, name)];
       }
     } catch(e) { console.log(`[ToonStream] AWS error: ${e.message}`); }
     return extractGeneric(url, name);
