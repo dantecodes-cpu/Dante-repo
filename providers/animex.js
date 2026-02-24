@@ -155,6 +155,7 @@ async function request(method, url, options = {}) {
       headers: {
         "User-Agent":        USER_AGENT,
         "X-Requested-With":  "XMLHttpRequest",
+        ...(options.data ? { "Content-Type": "application/json" } : {}),
         ...options.headers
       },
       body:   options.data ? JSON.stringify(options.data) : undefined,
@@ -270,13 +271,12 @@ async function getTmdbMetadata(tmdbId, mediaType) {
   }
 }
 
-// ─── MATCH LOGIC (FIX 4+5: unified, season-aware) ────────────────────────────
-async function findAniListMatch(tmdbMeta, mediaType, season) {
-  const title       = tmdbMeta.title;
-  const year        = tmdbMeta.year;
-  const seasonNum   = season || 1;
+// ─── MATCH LOGIC (season-aware, returns ALL candidates) ─────────────────────
+async function findAniListCandidates(tmdbMeta, mediaType, season) {
+  const title     = tmdbMeta.title;
+  const year      = tmdbMeta.year;
+  const seasonNum = season || 1;
 
-  // Build ordered list of search queries to try, most specific first
   const queries = [];
   if (mediaType === "tv" && seasonNum > 1) {
     queries.push(`${title} Season ${seasonNum}`);
@@ -286,37 +286,52 @@ async function findAniListMatch(tmdbMeta, mediaType, season) {
   queries.push(title);
   if (year) queries.push(`${title} ${year}`);
 
+  const seenIds = new Set();
+  const allCandidates = [];
+
   for (const query of queries) {
     console.log(`[AnimeX] Searching AniList: "${query}"`);
     const results = await search(query);
     if (!results.length) continue;
 
-    // Score each result
-    const scored = results
-      .map(r => {
-        let score = diceSimilarity(r.title, title);
-        if (year && String(r.year) === String(year)) score += 0.15;
-        // For season > 1, reward results that mention the season number
-        if (seasonNum > 1) {
-          const rn = normalize(r.title);
-          if (rn.includes(`season ${seasonNum}`) || rn.includes(` ${seasonNum}`)) score += 0.2;
-        }
-        return { ...r, score };
-      })
-      .filter(r => r.score >= 0.6)
-      .sort((a, b) => b.score - a.score);
-
-    if (scored.length > 0) {
-      const best = scored[0];
-      console.log(`[AnimeX] Matched: "${best.title}" (AL ID: ${best.id}, score: ${best.score.toFixed(2)})`);
-      return best;
+    for (const r of results) {
+      if (seenIds.has(r.id)) continue;
+      seenIds.add(r.id);
+      let score = diceSimilarity(r.title, title);
+      if (year && String(r.year) === String(year)) score += 0.15;
+      if (seasonNum > 1) {
+        const rn = normalize(r.title);
+        if (rn.includes(`season ${seasonNum}`) || rn.includes(` ${seasonNum}`)) score += 0.2;
+      }
+      if (score >= 0.6) allCandidates.push({ ...r, score });
     }
   }
 
-  console.log("[AnimeX] No AniList match found");
-  return null;
-}
+  allCandidates.sort((a, b) => b.score - a.score);
 
+  // For season > 1: push the plain base-series entry (Season 1) to the bottom.
+  // Arc/sequel entries ("Mugen Train Arc", "Entertainment District Arc", etc.)
+  // should be tried before falling back to the Season 1 pool.
+  if (seasonNum > 1 && allCandidates.length > 1) {
+    const baseTitle = normalize(title);
+    allCandidates.sort((a, b) => {
+      const aNorm = normalize(a.title);
+      const bNorm = normalize(b.title);
+      const aIsBase = aNorm === baseTitle;
+      const bIsBase = bNorm === baseTitle;
+      if (aIsBase && !bIsBase) return 1;   // push a down
+      if (bIsBase && !aIsBase) return -1;  // push b down
+      return b.score - a.score;
+    });
+  }
+
+  if (allCandidates.length === 0) {
+    console.log("[AnimeX] No AniList candidates found");
+  } else {
+    console.log(`[AnimeX] ${allCandidates.length} candidates: ${allCandidates.slice(0,4).map(c => `"${c.title}"(${c.score.toFixed(2)})`).join(", ")}`);
+  }
+  return allCandidates;
+}
 // ─── SOURCES (FIX 6: parallel, FIX 2: correct softsub field, FIX 8: no dupe) ─
 async function fetchSource(matchId, provider, epNumber, type, watchUrl) {
   try {
@@ -348,24 +363,37 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }
   console.log(`[AnimeX] Title: "${tmdbMeta.title}" (${tmdbMeta.year})`);
 
-  // 2. AniList match
-  const match = await findAniListMatch(tmdbMeta, mediaType, season);
-  if (!match) return [];
+  // 2. AniList candidates (ordered by score)
+  const candidates = await findAniListCandidates(tmdbMeta, mediaType, season);
+  if (!candidates.length) return [];
 
   const targetEpNum = episode || 1;
 
-  // 3. Fetch episode list
-  let episodes;
-  try {
-    const episodesResponse = await request("get", `${BASE_URL}/api/anime/episodes/${match.id}?refresh=false`);
-    episodes = episodesResponse.data;
-    if (!Array.isArray(episodes) || episodes.length === 0) {
-      console.error("[AnimeX] Empty episode list from API");
-      return [];
+  // 3. Try each candidate until we find one with episodes
+  // This handles AniList splitting seasons into named arcs (e.g. Demon Slayer S2
+  // = "Mugen Train Arc" + "Entertainment District Arc", not "Season 2")
+  let match = null;
+  let episodes = null;
+  for (const candidate of candidates) {
+    try {
+      const episodesResponse = await request("get", `${BASE_URL}/api/anime/episodes/${candidate.id}?refresh=false`);
+      const eps = episodesResponse.data;
+      if (Array.isArray(eps) && eps.length > 0) {
+        match    = candidate;
+        episodes = eps;
+        console.log(`[AnimeX] Matched: "${match.title}" (AL ID: ${match.id}, score: ${match.score.toFixed(2)})`);
+        console.log(`[AnimeX] Found ${episodes.length} episodes`);
+        break;
+      } else {
+        console.log(`[AnimeX] "${candidate.title}" has no episodes, trying next...`);
+      }
+    } catch (e) {
+      console.log(`[AnimeX] Episode fetch failed for "${candidate.title}": ${e.message}, trying next...`);
     }
-    console.log(`[AnimeX] Found ${episodes.length} episodes`);
-  } catch (e) {
-    console.error("[AnimeX] Episode list fetch failed:", e.message);
+  }
+
+  if (!match || !episodes) {
+    console.error("[AnimeX] No candidates had available episodes");
     return [];
   }
 
