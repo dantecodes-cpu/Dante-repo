@@ -344,11 +344,45 @@ async function fetchSource(matchId, provider, epNumber, type, watchUrl) {
     const response = await request("get", `${BASE_URL}/api/anime/sources/${encryptedId}`, {
       headers: { "Referer": watchUrl, "Origin": BASE_URL }
     });
-    return response.data?.sources || [];
+    const data = response.data;
+    if (!data) return [];
+
+    const audioTracks = data.audio || [];
+    const sources     = data.sources || [];
+
+    // If the response includes explicit audio tracks (e.g. pahe with jpn+eng),
+    // expose each language track as its own stream instead of the generic sources[]
+    if (audioTracks.length >= 2) {
+      const langLabel = { jpn: "Sub", eng: "Dub", ja: "Sub", en: "Dub" };
+      return audioTracks
+        .filter(t => t.url)
+        .map(t => {
+          const lang = langLabel[t.language] || t.language || "Sub";
+          return { url: t.url, quality: extractQualityFromUrl(t.url) || "auto", audioLabel: lang };
+        });
+    }
+
+    // Single-audio source — use type label from the request
+    return sources.map(s => ({
+      url:        s.url,
+      quality:    s.quality || extractQualityFromUrl(s.url) || "auto",
+      audioLabel: null  // label comes from category type (Sub/Dub)
+    }));
   } catch (e) {
     console.error(`[AnimeX] Source fetch failed (${provider}/${type}):`, e.message);
     return [];
   }
+}
+
+// ─── QUALITY HELPERS ─────────────────────────────────────────────────────────
+function extractQualityFromUrl(url) {
+  if (!url) return null;
+  // Match explicit quality in path: 1080p, 720p, 480p, 360p, 4k/2160p
+  const m = url.match(/[/_-](4k|2160p?|1080p?|720p?|480p?|360p?)[/_.-]/i);
+  if (m) return m[1].toLowerCase().replace(/p$/, "") + "p";
+  // master.m3u8 = adaptive HLS
+  if (url.includes("master.m3u8")) return "adaptive";
+  return null;
 }
 
 // ─── MAIN ────────────────────────────────────────────────────────────────────
@@ -440,17 +474,24 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     for (const provider of cat.providers) {
       fetchTasks.push(
         fetchSource(match.id, provider, targetEp.number, cat.type, watchUrl)
-          .then(sources => sources.map(s => ({
-            name:    `AnimeX - ${provider} (${cat.label})`,
-            title:   `${cat.label} - ${s.quality || "Auto"}`,
-            url:     s.url,
-            quality: s.quality || "auto",
-            headers: {
-              "Referer":    watchUrl,
-              "Origin":     BASE_URL,
-              "User-Agent": USER_AGENT
-            }
-          })))
+          .then(sources => sources.map(s => {
+            const quality    = s.quality || "auto";
+            const audioLabel = s.audioLabel || cat.label;  // use detected lang if available
+            // Filter out cors.otakuu.se CORS-proxy streams — they require browser
+            // context to pass Origin checks and fail with ExoPlayer HTTP 403
+            if (s.url && s.url.includes("cors.otakuu.se")) return null;
+            return {
+              name:    `AnimeX - ${provider} (${audioLabel})`,
+              title:   `${audioLabel} - ${quality.toUpperCase()}`,
+              url:     s.url,
+              quality: quality,
+              headers: {
+                "Referer":    watchUrl,
+                "Origin":     BASE_URL,
+                "User-Agent": USER_AGENT
+              }
+            };
+          }).filter(Boolean))
       );
     }
   }
@@ -458,7 +499,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const results = await Promise.all(fetchTasks);
   const allStreams = results.flat();
 
-  // FIX 7: deduplicate by URL
+  // Deduplicate by URL — keep first occurrence (Sub before Dub, so Sub wins)
   const seen = new Set();
   const streams = allStreams.filter(s => {
     if (!s.url || seen.has(s.url)) return false;
