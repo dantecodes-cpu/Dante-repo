@@ -477,14 +477,28 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           .then(sources => sources.map(s => {
             const quality    = s.quality || "auto";
             const audioLabel = s.audioLabel || cat.label;  // use detected lang if available
-            // Filter out cors.otakuu.se CORS-proxy streams — they require browser
-            // context to pass Origin checks and fail with ExoPlayer HTTP 403
+            // Filter out cors.otakuu.se CORS-proxy streams — they 403 on segments
             if (s.url && s.url.includes("cors.otakuu.se")) return null;
             return {
               name:    `AnimeX - ${provider} (${audioLabel})`,
               title:   `${audioLabel} - ${quality.toUpperCase()}`,
               url:     s.url,
               quality: quality,
+              // behaviorHints.proxyHeaders tells Nuvio/ExoPlayer to send these headers
+              // on EVERY request — manifest AND each .ts segment.
+              // Without this, ExoPlayer only sends headers for the first manifest
+              // request and then 403s on segments (causing playback failure + slow seeking).
+              behaviorHints: {
+                notWebReady: false,
+                proxyHeaders: {
+                  request: {
+                    "Referer":    watchUrl,
+                    "Origin":     BASE_URL,
+                    "User-Agent": USER_AGENT
+                  }
+                }
+              },
+              // Keep headers too for backwards compat with older Nuvio versions
               headers: {
                 "Referer":    watchUrl,
                 "Origin":     BASE_URL,
