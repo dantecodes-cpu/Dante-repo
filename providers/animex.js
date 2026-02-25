@@ -516,19 +516,15 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     for (const provider of cat.providers) {
       fetchTasks.push(
         fetchSource(match.id, provider, targetEp.number, cat.type, watchUrl)
-          .then(async sources => {
-            // Use Promise.all so we can await resolveToMediaPlaylist inside map
-            const resolved = await Promise.all(sources.map(async s => {
+          .then(sources => sources.map(s => {
               if (!s.url) return null;
-              // Filter out cors.otakuu.se CORS-proxy streams — they 403 on segments
               if (s.url.includes("cors.otakuu.se")) return null;
               const quality    = s.quality || "auto";
               const audioLabel = s.audioLabel || cat.label;
-              const url        = await resolveToMediaPlaylist(s.url);
               return {
                 name:    `AnimeX - ${provider} (${audioLabel})`,
                 title:   `${audioLabel} - ${quality.toUpperCase()}`,
-                url,
+                url:     s.url,
                 quality,
                 headers: {
                   "Referer":    watchUrl,
@@ -536,9 +532,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                   "User-Agent": USER_AGENT
                 }
               };
-            }));
-            return resolved.filter(Boolean);
-          })
+            }).filter(Boolean))
       );
     }
   }
