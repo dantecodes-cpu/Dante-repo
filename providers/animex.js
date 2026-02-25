@@ -385,6 +385,48 @@ function extractQualityFromUrl(url) {
   return null;
 }
 
+// ─── MANIFEST RESOLVER ───────────────────────────────────────────────────────
+// sv4/sv5/sv6.otakuu.se return master.m3u8 with relative media playlist URLs.
+// ExoPlayer handles relative segments fine when given the media playlist directly,
+// but Nuvio's two-hop resolution (master→media→segments) breaks on some builds.
+// Fix: fetch the master, resolve the media playlist URL to absolute, return that.
+// zen/cc.sgsgsgsr.site already has all-absolute URLs — skip resolver for those.
+async function resolveToMediaPlaylist(masterUrl) {
+  // Skip if not an m3u8 master playlist URL
+  if (!masterUrl.includes(".m3u8")) return masterUrl;
+
+  try {
+    const res  = await fetch(masterUrl, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(8000) });
+    const text = await res.text();
+
+    // Find the first non-iframe stream URL in the master playlist
+    const lines = text.split("\n");
+    let mediaUrl = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
+        const next = (lines[i + 1] || "").trim();
+        if (next && !next.startsWith("#")) {
+          mediaUrl = next;
+          break;
+        }
+      }
+    }
+    if (!mediaUrl) return masterUrl;
+
+    // Resolve relative URL against master base
+    if (!mediaUrl.startsWith("http")) {
+      const base = masterUrl.substring(0, masterUrl.lastIndexOf("/") + 1);
+      mediaUrl = base + mediaUrl;
+    }
+
+    console.log(`[AnimeX] Resolved media playlist: ${mediaUrl.slice(0, 70)}...`);
+    return mediaUrl;
+  } catch (e) {
+    console.log(`[AnimeX] Manifest resolve failed, using master: ${e.message}`);
+    return masterUrl; // fall back to master on error
+  }
+}
+
 // ─── MAIN ────────────────────────────────────────────────────────────────────
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[AnimeX] getStreams: tmdb=${tmdbId} type=${mediaType} S=${season} E=${episode}`);
@@ -474,38 +516,29 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     for (const provider of cat.providers) {
       fetchTasks.push(
         fetchSource(match.id, provider, targetEp.number, cat.type, watchUrl)
-          .then(sources => sources.map(s => {
-            const quality    = s.quality || "auto";
-            const audioLabel = s.audioLabel || cat.label;  // use detected lang if available
-            // Filter out cors.otakuu.se CORS-proxy streams — they 403 on segments
-            if (s.url && s.url.includes("cors.otakuu.se")) return null;
-            return {
-              name:    `AnimeX - ${provider} (${audioLabel})`,
-              title:   `${audioLabel} - ${quality.toUpperCase()}`,
-              url:     s.url,
-              quality: quality,
-              // behaviorHints.proxyHeaders tells Nuvio/ExoPlayer to send these headers
-              // on EVERY request — manifest AND each .ts segment.
-              // Without this, ExoPlayer only sends headers for the first manifest
-              // request and then 403s on segments (causing playback failure + slow seeking).
-              behaviorHints: {
-                notWebReady: false,
-                proxyHeaders: {
-                  request: {
-                    "Referer":    watchUrl,
-                    "Origin":     BASE_URL,
-                    "User-Agent": USER_AGENT
-                  }
+          .then(async sources => {
+            // Use Promise.all so we can await resolveToMediaPlaylist inside map
+            const resolved = await Promise.all(sources.map(async s => {
+              if (!s.url) return null;
+              // Filter out cors.otakuu.se CORS-proxy streams — they 403 on segments
+              if (s.url.includes("cors.otakuu.se")) return null;
+              const quality    = s.quality || "auto";
+              const audioLabel = s.audioLabel || cat.label;
+              const url        = await resolveToMediaPlaylist(s.url);
+              return {
+                name:    `AnimeX - ${provider} (${audioLabel})`,
+                title:   `${audioLabel} - ${quality.toUpperCase()}`,
+                url,
+                quality,
+                headers: {
+                  "Referer":    watchUrl,
+                  "Origin":     BASE_URL,
+                  "User-Agent": USER_AGENT
                 }
-              },
-              // Keep headers too for backwards compat with older Nuvio versions
-              headers: {
-                "Referer":    watchUrl,
-                "Origin":     BASE_URL,
-                "User-Agent": USER_AGENT
-              }
-            };
-          }).filter(Boolean))
+              };
+            }));
+            return resolved.filter(Boolean);
+          })
       );
     }
   }
